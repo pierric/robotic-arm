@@ -1,3 +1,5 @@
+#include <memory>
+#include <string>
 #include <sys/param.h>
 #include <esp_http_client.h>
 #include <esp_log.h>
@@ -11,7 +13,6 @@
 static const char *TAG = "HTTP_CLIENT";
 
 #define HOSTNAME_MAXLEN 127
-static char restheart_host[HOSTNAME_MAXLEN+1];
 
 esp_err_t _http_event_handler(esp_http_client_event_t *evt)
 {
@@ -88,24 +89,17 @@ esp_err_t _http_event_handler(esp_http_client_event_t *evt)
             }
             output_len = 0;
             break;
+        default:
+            // HTTP_EVENT_REDIRECT
+            break;
     }
     return ESP_OK;
 }
 
 esp_http_client_handle_t initHttpClient() {
-    const auto [host, port] = parseEndpoint(Q(RESTHEART_ENDPOINT));
+    const auto [host, port] = parseEndpoint(CONFIG_RESTHEART_ENDPOINT);
     int port_value = port.value_or(8080);
     
-    // const char *endpoint_spec = Q(RESTHEART_ENDPOINT);
-    // const char *host = endpoint_spec;
-    // int port = 8080;
-
-    // const char *sep = strchr(endpoint_spec, ':');
-    // if(sep) {
-    //     strncpy(restheart_host, endpoint_spec, MIN(sep - endpoint_spec, HOSTNAME_MAXLEN));
-    //     host = restheart_host;
-    //     port = atoi(sep + 1);
-    // }
     esp_http_client_config_t config = {
         .host = host.c_str(),
         .port = port_value,
@@ -115,6 +109,15 @@ esp_http_client_handle_t initHttpClient() {
         .transport_type = HTTP_TRANSPORT_OVER_TCP,
     };
     esp_http_client_handle_t handle = esp_http_client_init(&config);
-    esp_http_client_set_header(handle, "Authorization", "Basic " Q(RESTHEART_TOKEN));
+    esp_http_client_set_header(handle, "Authorization", "Basic " CONFIG_RESTHEART_TOKEN);
     return handle;
+}
+
+std::string getHttpContent(esp_http_client_handle_t handle)
+{
+    size_t len = esp_http_client_get_content_length(handle);
+    auto buffer = std::make_unique<char[]>(len + 1);
+    esp_http_client_read_response(handle, buffer.get(), len);
+    buffer[len] = 0;
+    return std::string(buffer.get());
 }

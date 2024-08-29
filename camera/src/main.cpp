@@ -1,17 +1,18 @@
-#include <Arduino.h>
-#include <Elog.h>
-#include <WiFi.h>
 #include <base64.h>
 #include <esp_camera.h>
+#include <esp_timer.h>
 #include <esp_http_client.h>
 #include <esp_sntp.h>
-// #include <json.hpp>
+#include <esp_log.h>
+#include <esp_heap_caps.h>
 #include <picojson.h>
-#include "driver/gpio.h"
+#include <driver/gpio.h>
 
+#include "utils.h"
 #include "pins.h"
+#include "http.h"
 #include "mqtt.h"
-#include "robot.h"
+#include "manipulator.h"
 
 #define QQ(x) #x
 #define Q(x) QQ(x)
@@ -31,62 +32,31 @@ unsigned long xclk = 8;
 unsigned long xclk = XCLK_FREQ_MHZ;
 #endif
 
-const float FPS = 30.;
+static const char * TAG = "main";
 
-static camera_config_t config;
+static const float FPS = 30.;
 static esp_http_client_handle_t http_client;
-static MqttClient mqtt(Q(MQTT_ENDPOINT));
-Elog logger;
+static MqttClient mqtt(CONFIG_MQTT_ENDPOINT);
 
 extern void onManipulatorCommand(void *message, size_t size, size_t offset, size_t total);
 extern void onCameraCommand(void *message, size_t size, size_t offset, size_t total);
-
-extern esp_http_client_handle_t initHttpClient();
-extern void initServo();
+extern void initWifi(void);
+extern bool wifiConnected(void);
 
 static int camera_enabled = 0;
 
 static void flashLED(int flashtime)
 {
-#if defined(LED_PIN) // If we have it; flash it.
-    digitalWrite(LED_PIN, LED_ON); // On at full power.
-    delay(flashtime); // delay
-    digitalWrite(LED_PIN, LED_OFF); // turn Off
+#if defined(LED_PIN)
+    gpio_set_level((gpio_num_t)LED_PIN, LED_ON);
+    vTaskDelay(flashtime / portTICK_PERIOD_MS);
+    gpio_set_level((gpio_num_t)LED_PIN, LED_OFF);
 #endif
-}
-
-static void initWifi()
-{
-    logger.log(INFO, "Starting WiFi");
-
-    WiFi.setSleep(false);
-
-    byte mac[6] = { 0, 0, 0, 0, 0, 0 };
-    WiFi.macAddress(mac);
-    logger.log(INFO, "MAC address: %02X:%02X:%02X:%02X:%02X:%02X", mac[0],
-        mac[1], mac[2], mac[3], mac[4], mac[5]);
-
-    logger.log(INFO, "Connecting to %s", Q(WIFI_SSID));
-    WiFi.setHostname("parol6-camera");
-    WiFi.begin(Q(WIFI_SSID), Q(WIFI_PASSWORD));
-
-    unsigned long start = millis();
-    while ((millis() - start <= WIFI_WATCHDOG)
-        && (WiFi.status() != WL_CONNECTED)) {
-        delay(500);
-        logger.log(INFO, "... waiting");
-    }
-
-    if (WiFi.status() == WL_CONNECTED) {
-        logger.log(INFO, "... succeeded");
-    } else {
-        logger.log(INFO, "... failed");
-        WiFi.disconnect(); // (resets the WiFi scan)
-    }
 }
 
 static void initCamera()
 {
+    camera_config_t config;
     // Populate camera config structure with hardware and other defaults
     config.ledc_channel = LEDC_CHANNEL_0;
     config.ledc_timer = LEDC_TIMER_0;
@@ -125,11 +95,11 @@ static void initCamera()
     if (err != ESP_OK) {
         abort();
     } else {
-        logger.log(INFO, "Camera init succeeded");
+        ESP_LOGI(TAG, "Camera init succeeded");
 
         // Get a reference to the sensor
         sensor_t* s = esp_camera_sensor_get();
-        logger.log(INFO, "Camera module: %d\n", s->id.PID);
+        ESP_LOGI(TAG, "Camera module: %d\n", s->id.PID);
         s->set_vflip(s, 1);           // 0 = disable , 1 = enable
 
         /*
@@ -172,47 +142,97 @@ void initMqtt()
     mqtt.connect();
     mqtt.subscribe("/manipulator/command", onManipulatorCommand);
     mqtt.subscribe("/camera/command", onCameraCommand);
-    logger.log(INFO, "MQTT topic subscribed.");
+    ESP_LOGI(TAG, "MQTT topic subscribed.");
 }
 
-void initCan();
-
-void setup()
+void onCameraCommand(void *message, size_t size, size_t offset, size_t total)
 {
-    Serial.begin(115200);
-    Serial.setDebugOutput(true);
-    Serial.println();
-    Serial.println("====");
-    logger.addSerialLogging(Serial, "Mani", INFO);
+    if (strncmp((const char *)message, "on", 2) == 0) {
+        ESP_LOGI(TAG, "enabling camera");
+        camera_enabled = 1;
+    }
+    else {
+        ESP_LOGI(TAG, "disabling camera");
+        camera_enabled = 0;
+    }
+}
 
-    if (!psramFound()) {
-        Serial.println("Fatal Error; Halting");
-        while (true) {
-            Serial.println(
-                "No PSRAM found; camera cannot be initialised: Please "
-                "check the board config for your module.");
-            delay(5000);
-        }
+static void _send(esp_http_client_handle_t http_client, std::vector<std::pair<double, std::string>>& queue)
+{
+    picojson::array batch;
+
+    for (auto [timestamp, image]: queue) {
+        picojson::object obj;
+        obj["time_stamp"] = picojson::value(timestamp);
+        obj["image"] = picojson::value(image);
+        batch.push_back(picojson::value(obj));
     }
 
-#if defined(LED_PIN) // If we have a notification LED, set it to output
-    pinMode(LED_PIN, OUTPUT);
+    std::string payload = picojson::value(batch).serialize();
+
+    esp_http_client_set_header(http_client, "Content-Type", "application/json");
+    esp_http_client_set_method(http_client, HTTP_METHOD_POST);
+    esp_http_client_set_url(http_client, "/camera");
+    esp_http_client_set_post_field(http_client, payload.c_str(), payload.length());
+
+    esp_err_t err = esp_http_client_perform(http_client);
+
+    if (err != ESP_OK) {
+        ESP_LOGI(TAG, "HTTP POST request failed: %s", esp_err_to_name(err));
+    }
+    else {
+        int rc = esp_http_client_get_status_code(http_client);
+        if (rc != 200 && rc != 201) {
+            ESP_LOGI(TAG, "HTTP error [%d]: %s", rc, getHttpContent(http_client).c_str());
+        }
+    }
+}
+
+static std::vector<std::pair<double, std::string>> queue;
+
+esp_err_t camera_capture(double now)
+{
+    camera_fb_t* fb = esp_camera_fb_get();
+    if (!fb) {
+        esp_camera_fb_return(fb);
+        ESP_LOGI(TAG, "Camera capture failed");
+        return ESP_FAIL;
+    }
+
+    assert(fb->format == PIXFORMAT_JPEG);
+
+    std::string bs = Base64::encode(std::string((const char*)fb->buf, fb->len));
+    queue.push_back(std::make_pair((double)(now * 1000), std::move(bs)));
+
+    if (queue.size() >= 30) {
+        _send(http_client, queue);
+        queue.clear();
+    }
+
+    esp_camera_fb_return(fb);
+    return ESP_OK;
+}
+
+static uint64_t last_timestamp = 0;
+static uint64_t fps_counter_last_timestamp = 0;
+static uint32_t fps = 0;
+static uint64_t elasp_statistics = 0;
+static double delay_statistics = 0;
+
+extern "C" void app_main(void)
+{
+    heap_caps_print_heap_info(MALLOC_CAP_DEFAULT);
+
+#if defined(LED_PIN)
+    gpio_set_direction((gpio_num_t)LED_PIN, GPIO_MODE_OUTPUT);
 #endif
 
     flashLED(500);
-
     initCamera();
-
-    while ((WiFi.status() != WL_CONNECTED)) {
-        initWifi();
-        delay(1000);
-    }
-
-    delay(1000);
-
+    initWifi();
     http_client = initHttpClient();
 
-    logger.log(INFO, "initializing SNTP.");
+    ESP_LOGI(TAG, "initializing SNTP.");
     setenv("TZ", "UTC", 2);
     tzset();
     sntp_set_sync_interval(2 * 3600 * 1000);
@@ -225,133 +245,46 @@ void setup()
     const int retry_count = 10;
     while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET
         && ++retry < retry_count) {
-        logger.log(INFO, "... Waiting for system time to be set... (%d/%d)", retry, retry_count);
-        delay(2000);
+        ESP_LOGI(TAG, "... Waiting for system time to be set... (%d/%d)", retry, retry_count);
+        vTaskDelay(2000 / portTICK_PERIOD_MS);
     }
     if (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED) {
-        logger.log(INFO, "... done");
+        ESP_LOGI(TAG, "... done");
     }
     else {
-        logger.log(INFO, "... still not ready");
+        ESP_LOGI(TAG, "... still not ready");
     }
 
     initMqtt();
-    initServo();
-    initCan();
-}
+    initManiplator();
 
-void onCameraCommand(void *message, size_t size, size_t offset, size_t total)
-{
-    if (strncmp((const char *)message, "on", 2) == 0) {
-        logger.log(INFO, "enabling camera");
-        camera_enabled = 1;
+    while(true) {
+        esp_err_t rc = ESP_OK;
+        if (camera_enabled) {
+            rc = camera_capture(get_timestamp());
+        }
+
+        if (rc != ESP_OK || !mqtt.connected() || !wifiConnected()) {
+            flashLED(500);
+        }
+
+        uint64_t end = esp_timer_get_time();
+        uint64_t elasp = end - last_timestamp;
+        elasp_statistics += elasp;
+        float perframe = (1000000. / FPS);
+        if (elasp < perframe) {
+            delay_statistics += (perframe - elasp) / 1000.0;
+            vTaskDelay((perframe - elasp) / (1000.0 * portTICK_PERIOD_MS));
+        }
+        last_timestamp = esp_timer_get_time();
+
+        if (last_timestamp - fps_counter_last_timestamp > 1000000) {
+            ESP_LOGI(TAG, "fps: %lu, avg_elasp: %f, avg_delay: %f", fps, elasp_statistics / (fps+0.01), delay_statistics / (fps+0.1));
+            fps = 0;
+            elasp_statistics = 0;
+            delay_statistics = 0;
+            fps_counter_last_timestamp = last_timestamp;
+        }
+        fps += 1;
     }
-    else {
-        logger.log(INFO, "disabling camera");
-        camera_enabled = 0;
-    }
-}
-
-
-esp_err_t camera_capture(double now, struct RobotStatus& robot_status)
-{
-    camera_fb_t* fb = esp_camera_fb_get();
-    if (!fb) {
-        esp_camera_fb_return(fb);
-        logger.log(INFO, "Camera capture failed");
-        return ESP_FAIL;
-    }
-
-    logger.log(INFO, "status: %s", dump_status(robot_status).c_str());
-
-    assert(fb->format == PIXFORMAT_JPEG);
-
-    std::string bs = Base64::encode(std::string((const char*)fb->buf, fb->len));
-
-    std::vector<picojson::value> positions;
-    std::transform(
-        robot_status.positions.begin(),
-        robot_status.positions.end(),
-        std::back_insert_iterator(positions),
-        [](auto pos) {return picojson::value(pos);});
-
-    picojson::object obj;
-    obj["time_stamp"] = picojson::value((double)(now * 1000));
-    obj["homed"] = picojson::value(robot_status.homed);
-    obj["positions"] = picojson::value(positions);
-    obj["gripper"] = picojson::value(robot_status.gripper_position);
-    obj["image"] = picojson::value(std::move(bs));
-    std::string payload = picojson::value(obj).serialize();
-
-    esp_http_client_set_header(http_client, "Content-Type", "application/json");
-    esp_http_client_set_method(http_client, HTTP_METHOD_POST);
-    esp_http_client_set_url(http_client, "/camera");
-    esp_http_client_set_post_field(
-        http_client, payload.c_str(), payload.length());
-
-    esp_err_t err = esp_http_client_perform(http_client);
-
-    if (err != ESP_OK) {
-        logger.log(INFO, "HTTP POST request failed: %s", esp_err_to_name(err));
-        return ESP_FAIL;
-    }
-
-    int rc = esp_http_client_get_status_code(http_client);
-    if (rc != 200 && rc != 201) {
-        logger.log(INFO, "Request error, status_code=%d: ", rc);
-        size_t len = esp_http_client_get_content_length(http_client);
-        char* buffer = (char*)malloc(len + 1);
-        esp_http_client_read_response(http_client, buffer, len);
-        buffer[len] = 0;
-        logger.log(INFO, buffer);
-        free(buffer);
-    }
-
-    esp_camera_fb_return(fb);
-    return ESP_OK;
-}
-
-double get_timestamp()
-{
-    struct timeval tv_now;
-    gettimeofday(&tv_now, NULL);
-    return tv_now.tv_sec + (double)tv_now.tv_usec / 1000000.0f;
-}
-
-static uint64_t last_timestamp = 0;
-static uint64_t fps_counter_last_timestamp = 0;
-static uint32_t fps = 0;
-static uint64_t elasp_statistics = 0;
-
-void loop()
-{
-    esp_err_t rc = ESP_OK;
-    double now = get_timestamp();
-
-    auto robot_status = query_status();
-
-    if (camera_enabled && robot_status) {
-        rc = camera_capture(now, robot_status.value());
-    }
-
-    if (!robot_status.has_value() || rc != ESP_OK || !mqtt.connected() || WiFi.status() != WL_CONNECTED) {
-        flashLED(500);
-    }
-
-    uint64_t end = esp_timer_get_time();
-    uint64_t elasp = end - last_timestamp;
-    elasp_statistics += elasp;
-    float perframe = (1000000. / FPS);
-    if (elasp < perframe) {
-        delay((perframe - elasp) / 1000.0);
-    }
-    last_timestamp = end;
-
-    if (end - fps_counter_last_timestamp > 1000000) {
-        logger.log(INFO, "fps: %d, avg_elasp: %f", fps, elasp_statistics / (fps+0.01));
-        fps = 0;
-        elasp_statistics = 0;
-        fps_counter_last_timestamp = end;
-    }
-    fps += 1;
 }

@@ -3,16 +3,17 @@
 #include <sstream>
 #include <iomanip>
 #include <string>
-#include <Elog.h>
+#include <esp_log.h>
 #include <esp_err.h>
 #include "driver/twai.h"
 
 #include "robot.h"
 
+static const char * TAG = "robot";
+
 using std::vector;
 using std::optional;
 
-extern Elog logger;
 extern float getManipulatorState(void);
 
 void initCan()
@@ -22,16 +23,16 @@ void initCan()
     twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
     if (twai_driver_install(&g_config, &t_config, &f_config) == ESP_OK) {
-        logger.log(INFO, "CanBus driver installed");
+        ESP_LOGI(TAG, "CanBus driver installed");
     } else {
-        logger.log(INFO, "Failed to install CanBus driver");
+        ESP_LOGI(TAG, "Failed to install CanBus driver");
         return;
     }
 
     if (twai_start() == ESP_OK) {
-        logger.log(INFO, "CanBus driver started");
+        ESP_LOGI(TAG, "CanBus driver started");
     } else {
-        logger.log(INFO, "Failed to start CanBus driver");
+        ESP_LOGI(TAG, "Failed to start CanBus driver");
         return;
     }        
 }
@@ -48,7 +49,7 @@ optional<vector<uint8_t>> read_status()
         rc = twai_receive(&message, 50);
         if (rc == ESP_ERR_TIMEOUT) continue;
         if (rc != ESP_OK) {
-            logger.log(INFO, "Failed to read CanBus message: %s", esp_err_to_name(rc));
+            ESP_LOGI(TAG, "Failed to read CanBus message: %s", esp_err_to_name(rc));
             break;
         }
         if (message.identifier == 0x301){
@@ -59,17 +60,16 @@ optional<vector<uint8_t>> read_status()
         }
     } while (cnt < 20);
 
-    logger.log(INFO, "Failed to make a full payload. Error in receiving or no sentry message.");
+    ESP_LOGI(TAG, "Failed to make a full payload. Error in receiving or no sentry message.");
     return {};
 }
 
 optional<struct RobotStatus> query_status()
 {
-    esp_err_t rc;
     twai_message_t message = {.identifier = 0x300, .data_length_code = 0};
 
     if (twai_transmit(&message, pdMS_TO_TICKS(10)) != ESP_OK) {
-        logger.log(INFO, "Failed to queue the CanBus message");
+        ESP_LOGI(TAG, "Failed to queue the CanBus message");
         return {};
     }
 
@@ -78,7 +78,7 @@ optional<struct RobotStatus> query_status()
         for (auto it=status->begin(); it!=status->end(); ++it) {
             oss << std::setw(2) << std::setfill('0') << std::hex << int(*it) << " ";
         }
-        logger.log(DEBUG, "Full message: [%d] %s", status->size(), oss.str().c_str());
+        ESP_LOGD(TAG, "Full message: [%d] %s", status->size(), oss.str().c_str());
 
         uint8_t *buf = status->data();
         float* positions = reinterpret_cast<float *>(buf + 4);

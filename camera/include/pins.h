@@ -1,5 +1,8 @@
 // https://github.com/easytarget/esp32-cam-webserver/blob/master/camera_pins.h
 
+#define LOW  0
+#define HIGH 1
+
 /*
  *   Pin definitions for some common ESP-CAM modules
  *

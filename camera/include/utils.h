@@ -11,4 +11,6 @@ using std::string;
 
 pair<string, optional<int>> parseEndpoint(const string& spec);
 
+double get_timestamp();
+
 #endif

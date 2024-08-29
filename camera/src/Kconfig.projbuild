@@ -1,0 +1,29 @@
+menu "Project Configuration"
+
+    config ESP_WIFI_SSID
+        string "WiFi SSID"
+        default "myssid"
+        help
+            SSID (network name) for the example to connect to.
+
+    config ESP_WIFI_PASSWORD
+        string "WiFi Password"
+        default "mypassword"
+        help
+            WiFi password (WPA or WPA2) for the example to use.
+
+    config RESTHEART_ENDPOINT
+        string "restheart endpoint"
+        help
+            endpoint uri for the restheart service
+
+    config RESTHEART_TOKEN
+        string "restheart access token"
+        help
+            access token for the restheart service
+
+    config MQTT_ENDPOINT
+        string "mqtt broker endpoint"
+        help
+            endpoint uri for the mqtt broker
+endmenu
