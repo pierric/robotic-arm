@@ -9,15 +9,74 @@
 #include <esp_http_client.h>
 #include <freertos/task.h>
 
-#include "iot_servo.h"
+#include "utils.h"
 #include "http.h"
+
+static const int servoPin = 12;
+
+#ifndef ARDUINO
+#include "iot_servo.h"
+
+static double _read_angle(void)
+{
+    float angle;
+    ESP_ERROR_CHECK(iot_servo_read_angle(LEDC_LOW_SPEED_MODE, 0, &angle));
+    return angle;
+}
+
+static void _write_angle(double angle)
+{
+    ESP_ERROR_CHECK(iot_servo_write_angle(LEDC_LOW_SPEED_MODE, 0, angle));
+}
+
+static void _init(void)
+{
+    servo_config_t servo_cfg = {
+        .max_angle = 90,
+        .min_width_us = 500,
+        .max_width_us = 2500,
+        .freq = 50,
+        .timer_number = LEDC_TIMER_1,
+        .channels = {
+            .servo_pin = {
+                (gpio_num_t) servoPin,
+            },
+            .ch = {
+                LEDC_CHANNEL_1,
+            },
+        },
+        .channel_number = 1,
+    };
+    ESP_ERROR_CHECK(iot_servo_init(LEDC_LOW_SPEED_MODE, &servo_cfg));
+}
+
+#else
+#include "Servo.h"
+
+Servo servo;
+
+static void _init(void)
+{
+    servo.attach(servoPin, Servo::CHANNEL_NOT_ATTACHED, 0, 90);
+}
+
+static void _write_angle(double angle)
+{
+    servo.write((int)angle);
+}
+
+static double _read_angle(void)
+{
+    return (double) servo.read();
+}
+
+#endif
 
 static const char * TAG = "gripper";
 
 extern esp_http_client_handle_t initHttpClient();
 extern double get_timestamp();
 
-const int servoPin = 12;
 const int syncFPS = 30;
 const int QUEUE_THRESHOLD = syncFPS;
 static TaskHandle_t xSyncHandle = NULL;
@@ -33,24 +92,12 @@ void onManipulatorCommand(void *message, size_t size, size_t offset, size_t tota
     float angle = std::max(0.f, std::min(180.f, std::stof(buffer)));
     ESP_LOGI(TAG, "mqtt, setting angle: %f", angle);
 
-    esp_err_t rc = iot_servo_write_angle(LEDC_LOW_SPEED_MODE, 0, angle);
-
-    if (ESP_OK != rc) {
-        ESP_LOGE(TAG, "servo: failed to set angle: %s", esp_err_to_name(rc));
-    }
+    _write_angle(angle);
 }
 
 double getManipulatorState(void)
 {
-    float angle;
-    esp_err_t rc = iot_servo_read_angle(LEDC_LOW_SPEED_MODE, 0, &angle);
-
-    if (ESP_OK != rc) {
-        ESP_LOGE(TAG, "servo: cannot read the angle: %s", esp_err_to_name(rc));
-        return 0;
-    }
-
-    return angle;
+    return _read_angle();
 }
 
 static void _send(esp_http_client_handle_t http_client, std::vector<std::pair<double, double>>& queue)
@@ -109,7 +156,7 @@ void vSyncTask(void * pvParameters)
         last_timestamp = esp_timer_get_time(); 
 
         if (last_timestamp - fps_counter_last_timestamp > 1000000) {
-            ESP_LOGD(TAG, "[Manipulator] fps: %lu", fps);
+            ESP_LOGD(TAG, "[Manipulator] fps: " FMT_UINT32_T, fps);
             fps = 0;
             fps_counter_last_timestamp = last_timestamp;
         }        
@@ -119,33 +166,9 @@ void vSyncTask(void * pvParameters)
 
 esp_err_t initManiplator(void)
 {
-    servo_config_t servo_cfg = {
-        .max_angle = 90,
-        .min_width_us = 500,
-        .max_width_us = 2500,
-        .freq = 50,
-        .timer_number = LEDC_TIMER_0,
-        .channels = {
-            .servo_pin = {
-                (gpio_num_t) servoPin,
-            },
-            .ch = {
-                LEDC_CHANNEL_0,
-            },
-        },
-        .channel_number = 1,
-    };
-    esp_err_t rc = iot_servo_init(LEDC_LOW_SPEED_MODE, &servo_cfg);
-
-    if (ESP_OK != rc) {
-        ESP_LOGE(TAG, "servo: failed to initialize: %s", esp_err_to_name(rc));
-        return rc;
-    }
-
+    _init();
     ESP_LOGI(TAG, "servo: attached.");
-
-    iot_servo_write_angle(LEDC_LOW_SPEED_MODE, 0, 0);
-
-    xTaskCreate(vSyncTask, "SyncTask", 65536, NULL, tskIDLE_PRIORITY, &xSyncHandle);
+    _write_angle(0);
+    // xTaskCreate(vSyncTask, "SyncTask", 65536, NULL, tskIDLE_PRIORITY, &xSyncHandle);
     return ESP_OK;
 }

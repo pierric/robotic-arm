@@ -4,6 +4,8 @@
 #include <esp_log.h>
 #include <esp_err.h>
 
+#include "config.h"
+
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
 
@@ -63,12 +65,9 @@ void initWifi()
                                                         NULL,
                                                         &instance_got_ip));
 
-    wifi_config_t wifi_config = {
-        .sta = {
-            .ssid = CONFIG_ESP_WIFI_SSID,
-            .password = CONFIG_ESP_WIFI_PASSWORD,
-        },
-    };
+    wifi_sta_config_t sta_config = {CONFIG_ESP_WIFI_SSID, CONFIG_ESP_WIFI_PASSWORD};
+    wifi_config_t wifi_config = {.sta = sta_config};
+
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA) );
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config) );
     ESP_ERROR_CHECK(esp_wifi_start() );

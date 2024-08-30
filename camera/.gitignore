@@ -8,3 +8,4 @@ dependencies.lock
 sdkconfig.esp32dev
 sdkconfig.esp32dev.old
 components
+include/config.h

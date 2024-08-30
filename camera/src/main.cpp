@@ -1,3 +1,7 @@
+#ifdef ARDUINO
+#include <Arduino.h>
+#endif
+
 #include <base64.h>
 #include <esp_camera.h>
 #include <esp_timer.h>
@@ -7,7 +11,9 @@
 #include <esp_heap_caps.h>
 #include <picojson.h>
 #include <driver/gpio.h>
+#include <nvs_flash.h>
 
+#include "config.h"
 #include "utils.h"
 #include "pins.h"
 #include "http.h"
@@ -45,19 +51,27 @@ extern bool wifiConnected(void);
 
 static int camera_enabled = 0;
 
+#if defined(LED_PIN)
+static void initLED()
+{
+    gpio_config_t io_conf = {
+        .pin_bit_mask = 1ULL << LED_PIN,
+        .mode = GPIO_MODE_OUTPUT,
+    };
+    gpio_config(&io_conf);
+}
+
 static void flashLED(int flashtime)
 {
-#if defined(LED_PIN)
     gpio_set_level((gpio_num_t)LED_PIN, LED_ON);
     vTaskDelay(flashtime / portTICK_PERIOD_MS);
     gpio_set_level((gpio_num_t)LED_PIN, LED_OFF);
-#endif
 }
+#endif
 
+static camera_config_t config;
 static void initCamera()
 {
-    camera_config_t config;
-    // Populate camera config structure with hardware and other defaults
     config.ledc_channel = LEDC_CHANNEL_0;
     config.ledc_timer = LEDC_TIMER_0;
     config.pin_d0 = Y2_GPIO_NUM;
@@ -78,9 +92,8 @@ static void initCamera()
     config.pin_reset = RESET_GPIO_NUM;
     config.xclk_freq_hz = xclk * 1000000;
     config.pixel_format = PIXFORMAT_JPEG;
-    // Low(ish) default framesize and quality
-    config.frame_size = FRAMESIZE_VGA;
-    config.jpeg_quality = 12;
+    config.frame_size = FRAMESIZE_QQVGA;
+    config.jpeg_quality = 1;
     config.fb_location = CAMERA_FB_IN_PSRAM;
     config.fb_count = 2;
     config.grab_mode = CAMERA_GRAB_LATEST;
@@ -99,7 +112,7 @@ static void initCamera()
 
         // Get a reference to the sensor
         sensor_t* s = esp_camera_sensor_get();
-        ESP_LOGI(TAG, "Camera module: %d\n", s->id.PID);
+        ESP_LOGI(TAG, "Camera module: %d", s->id.PID);
         s->set_vflip(s, 1);           // 0 = disable , 1 = enable
 
         /*
@@ -157,7 +170,7 @@ void onCameraCommand(void *message, size_t size, size_t offset, size_t total)
     }
 }
 
-static void _send(esp_http_client_handle_t http_client, std::vector<std::pair<double, std::string>>& queue)
+static void _send(esp_http_client_handle_t http_client, const std::vector<std::pair<double, std::string>>& queue)
 {
     picojson::array batch;
 
@@ -188,8 +201,6 @@ static void _send(esp_http_client_handle_t http_client, std::vector<std::pair<do
     }
 }
 
-static std::vector<std::pair<double, std::string>> queue;
-
 esp_err_t camera_capture(double now)
 {
     camera_fb_t* fb = esp_camera_fb_get();
@@ -199,16 +210,13 @@ esp_err_t camera_capture(double now)
         return ESP_FAIL;
     }
 
-    assert(fb->format == PIXFORMAT_JPEG);
+    // assert(fb->format == PIXFORMAT_JPEG);
 
     std::string bs = Base64::encode(std::string((const char*)fb->buf, fb->len));
-    queue.push_back(std::make_pair((double)(now * 1000), std::move(bs)));
+    
+    //queue.push_back(std::make_pair((double)(now * 1000), std::move(bs)));
 
-    if (queue.size() >= 30) {
-        _send(http_client, queue);
-        queue.clear();
-    }
-
+    _send(http_client, {std::make_pair((double)(now * 1000), std::move(bs))});
     esp_camera_fb_return(fb);
     return ESP_OK;
 }
@@ -219,15 +227,20 @@ static uint32_t fps = 0;
 static uint64_t elasp_statistics = 0;
 static double delay_statistics = 0;
 
-extern "C" void app_main(void)
+void setup()
 {
-    heap_caps_print_heap_info(MALLOC_CAP_DEFAULT);
-
-#if defined(LED_PIN)
-    gpio_set_direction((gpio_num_t)LED_PIN, GPIO_MODE_OUTPUT);
+#ifdef ARDUINO
+    Serial.begin(115200);
+    Serial.setDebugOutput(true);
 #endif
 
-    flashLED(500);
+    //heap_caps_print_heap_info(MALLOC_CAP_DEFAULT);
+
+#ifdef LED_PIN
+    // initLED();
+#endif
+
+    ESP_ERROR_CHECK(nvs_flash_init());
     initCamera();
     initWifi();
     http_client = initHttpClient();
@@ -257,15 +270,20 @@ extern "C" void app_main(void)
 
     initMqtt();
     initManiplator();
+}
 
-    while(true) {
+void loop()
+{
         esp_err_t rc = ESP_OK;
         if (camera_enabled) {
             rc = camera_capture(get_timestamp());
         }
 
         if (rc != ESP_OK || !mqtt.connected() || !wifiConnected()) {
+            ESP_LOGE(TAG, "malfunctioning...");
+#ifdef LED_PIN            
             flashLED(500);
+#endif            
         }
 
         uint64_t end = esp_timer_get_time();
@@ -279,12 +297,22 @@ extern "C" void app_main(void)
         last_timestamp = esp_timer_get_time();
 
         if (last_timestamp - fps_counter_last_timestamp > 1000000) {
-            ESP_LOGI(TAG, "fps: %lu, avg_elasp: %f, avg_delay: %f", fps, elasp_statistics / (fps+0.01), delay_statistics / (fps+0.1));
+            ESP_LOGI(TAG, "fps: " FMT_UINT32_T ", avg_elasp: %f, avg_delay: %f", fps, elasp_statistics / (fps+0.01), delay_statistics / (fps+0.1));
             fps = 0;
             elasp_statistics = 0;
             delay_statistics = 0;
             fps_counter_last_timestamp = last_timestamp;
         }
         fps += 1;
+}
+
+#ifndef ARDUINO
+extern "C" void app_main(void)
+{
+    setup();
+
+    while(true) {
+        loop();
     }
 }
+#endif

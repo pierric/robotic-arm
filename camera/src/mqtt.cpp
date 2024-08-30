@@ -79,16 +79,24 @@ void MqttClient::connect()
         return;
     }
 
-    ESP_LOGI(TAG, "Connecting MQTT broker: %s:%lu", this->_brokerHost.c_str(), this->_brokerPort);
+    ESP_LOGI(TAG, "Connecting MQTT broker: %s:" FMT_UINT32_T, this->_brokerHost.c_str(), this->_brokerPort);
 
+    // IDF_VER >= 5
+    // const esp_mqtt_client_config_t mqtt_cfg = {
+    //     .broker = {
+    //         .address = {
+    //             .uri = this->_brokerHost.c_str(),
+    //             .port = this->_brokerPort,
+    //         }
+    //     },
+    //     .buffer = {.size = 2560},
+    // };
+
+    // IDF_VER < 5
     const esp_mqtt_client_config_t mqtt_cfg = {
-        .broker = {
-            .address = {
-                .hostname = this->_brokerHost.c_str(),
-                .port = this->_brokerPort,
-            }
-        },
-        .buffer = {.size = 2560},
+        .uri = this->_brokerHost.c_str(),
+        .port = this->_brokerPort,
+        .buffer_size = 2560,
     };
 
     this->_client = esp_mqtt_client_init(&mqtt_cfg);
