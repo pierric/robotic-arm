@@ -205,18 +205,15 @@ esp_err_t camera_capture(double now)
 {
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) {
-        esp_camera_fb_return(fb);
         ESP_LOGI(TAG, "Camera capture failed");
         return ESP_FAIL;
     }
 
-    // assert(fb->format == PIXFORMAT_JPEG);
+    assert(fb->format == PIXFORMAT_JPEG);
 
     std::string bs = Base64::encode(std::string((const char*)fb->buf, fb->len));
-    
-    //queue.push_back(std::make_pair((double)(now * 1000), std::move(bs)));
+    _send(http_client, {std::make_pair((double)(now * 1000), bs)});
 
-    _send(http_client, {std::make_pair((double)(now * 1000), std::move(bs))});
     esp_camera_fb_return(fb);
     return ESP_OK;
 }
@@ -238,6 +235,8 @@ void setup()
 
 #ifdef LED_PIN
     // initLED();
+    pinMode(LED_PIN, OUTPUT);
+
 #endif
 
     ESP_ERROR_CHECK(nvs_flash_init());
@@ -269,41 +268,43 @@ void setup()
     }
 
     initMqtt();
-    initManiplator();
+    // initManiplator();
 }
 
 void loop()
 {
-        esp_err_t rc = ESP_OK;
-        if (camera_enabled) {
-            rc = camera_capture(get_timestamp());
-        }
+    esp_err_t rc = ESP_OK;
+    double now = get_timestamp();
 
-        if (rc != ESP_OK || !mqtt.connected() || !wifiConnected()) {
-            ESP_LOGE(TAG, "malfunctioning...");
+    if (camera_enabled) {
+        rc = camera_capture(now);
+    }
+
+    if (rc != ESP_OK /* || !mqtt.connected() || !wifiConnected() */) {
+        ESP_LOGE(TAG, "malfunctioning... %d", rc);
 #ifdef LED_PIN            
-            flashLED(500);
+        flashLED(500);
 #endif            
-        }
+    }
 
-        uint64_t end = esp_timer_get_time();
-        uint64_t elasp = end - last_timestamp;
-        elasp_statistics += elasp;
-        float perframe = (1000000. / FPS);
-        if (elasp < perframe) {
-            delay_statistics += (perframe - elasp) / 1000.0;
-            vTaskDelay((perframe - elasp) / (1000.0 * portTICK_PERIOD_MS));
-        }
-        last_timestamp = esp_timer_get_time();
+    uint64_t end = esp_timer_get_time();
+    uint64_t elasp = end - last_timestamp;
+    elasp_statistics += elasp;
+    float perframe = (1000000. / FPS);
+    if (elasp < perframe) {
+        delay_statistics += (perframe - elasp) / 1000.0;
+        vTaskDelay((perframe - elasp) / (1000.0 * portTICK_PERIOD_MS));
+    }
+    last_timestamp = esp_timer_get_time();
 
-        if (last_timestamp - fps_counter_last_timestamp > 1000000) {
-            ESP_LOGI(TAG, "fps: " FMT_UINT32_T ", avg_elasp: %f, avg_delay: %f", fps, elasp_statistics / (fps+0.01), delay_statistics / (fps+0.1));
-            fps = 0;
-            elasp_statistics = 0;
-            delay_statistics = 0;
-            fps_counter_last_timestamp = last_timestamp;
-        }
-        fps += 1;
+    if (last_timestamp - fps_counter_last_timestamp > 1000000) {
+        ESP_LOGI(TAG, "fps: " FMT_UINT32_T ", avg_elasp: %f, avg_delay: %f", fps, elasp_statistics / (fps+0.01), delay_statistics / (fps+0.1));
+        fps = 0;
+        elasp_statistics = 0;
+        delay_statistics = 0;
+        fps_counter_last_timestamp = last_timestamp;
+    }
+    fps += 1;
 }
 
 #ifndef ARDUINO
