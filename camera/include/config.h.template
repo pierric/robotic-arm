@@ -1,0 +1,13 @@
+#ifndef _CONFIG_H
+#define _CONFIG_H
+
+// only necessary if arduino framework
+// use menuconfig if espidf framework
+
+#define CONFIG_ESP_WIFI_SSID <SSID_NAME>
+#define CONFIG_ESP_WIFI_PASSWORD <WIFI_PASSWWORD>
+#define CONFIG_RESTHEART_ENDPOINT <Endpoint for the restheart>
+#define CONFIG_RESTHEART_TOKEN "<Token for the restheart>"
+#define CONFIG_MQTT_ENDPOINT <Endpoint for mqtt broker>
+
+#endif

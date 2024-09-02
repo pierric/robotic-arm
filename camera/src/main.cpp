@@ -2,16 +2,17 @@
 #include <Arduino.h>
 #endif
 
+#include <ostream>
+#include <iomanip>
 #include <base64.h>
 #include <esp_camera.h>
 #include <esp_timer.h>
-#include <esp_http_client.h>
 #include <esp_sntp.h>
 #include <esp_log.h>
 #include <esp_heap_caps.h>
-#include <picojson.h>
 #include <driver/gpio.h>
 #include <nvs_flash.h>
+#include <SD_MMC.h>
 
 #include "config.h"
 #include "utils.h"
@@ -33,23 +34,28 @@
 // https://github.com/espressif/esp32-camera/issues/150#issuecomment-726473652
 // et al.
 #if !defined(XCLK_FREQ_MHZ)
-unsigned long xclk = 8;
+unsigned long xCameraClk = 8;
 #else
-unsigned long xclk = XCLK_FREQ_MHZ;
+unsigned long xCameraClk = XCLK_FREQ_MHZ;
 #endif
 
 static const char * TAG = "main";
-
 static const float FPS = 30.;
-static esp_http_client_handle_t http_client;
-static MqttClient mqtt(CONFIG_MQTT_ENDPOINT);
 
 extern void onManipulatorCommand(void *message, size_t size, size_t offset, size_t total);
 extern void onCameraCommand(void *message, size_t size, size_t offset, size_t total);
-extern void initWifi(void);
+extern esp_err_t initWifi(void);
 extern bool wifiConnected(void);
+extern void uploadTask(void * pvParameters);
 
 static int camera_enabled = 0;
+static MqttClient mqtt(CONFIG_MQTT_ENDPOINT);
+static uint64_t last_timestamp = 0;
+static uint64_t fps_counter_last_timestamp = 0;
+static uint32_t fps = 0;
+static uint64_t elasp_statistics = 0;
+static double delay_statistics = 0;
+static TaskHandle_t xUploaderHandle = NULL;
 
 #if defined(LED_PIN)
 static void initLED()
@@ -90,12 +96,12 @@ static void initCamera()
     config.pin_sccb_scl = SIOC_GPIO_NUM;
     config.pin_pwdn = PWDN_GPIO_NUM;
     config.pin_reset = RESET_GPIO_NUM;
-    config.xclk_freq_hz = xclk * 1000000;
+    config.xclk_freq_hz = xCameraClk * 1000000;
     config.pixel_format = PIXFORMAT_JPEG;
-    config.frame_size = FRAMESIZE_QQVGA;
-    config.jpeg_quality = 1;
+    config.frame_size = FRAMESIZE_VGA;
+    config.jpeg_quality = 12;
     config.fb_location = CAMERA_FB_IN_PSRAM;
-    config.fb_count = 2;
+    config.fb_count = 8;
     config.grab_mode = CAMERA_GRAB_LATEST;
 
 #if defined(CAMERA_MODEL_ESP_EYE)
@@ -170,59 +176,43 @@ void onCameraCommand(void *message, size_t size, size_t offset, size_t total)
     }
 }
 
-static void _send(esp_http_client_handle_t http_client, const std::vector<std::pair<double, std::string>>& queue)
-{
-    picojson::array batch;
-
-    for (auto [timestamp, image]: queue) {
-        picojson::object obj;
-        obj["time_stamp"] = picojson::value(timestamp);
-        obj["image"] = picojson::value(image);
-        batch.push_back(picojson::value(obj));
-    }
-
-    std::string payload = picojson::value(batch).serialize();
-
-    esp_http_client_set_header(http_client, "Content-Type", "application/json");
-    esp_http_client_set_method(http_client, HTTP_METHOD_POST);
-    esp_http_client_set_url(http_client, "/camera");
-    esp_http_client_set_post_field(http_client, payload.c_str(), payload.length());
-
-    esp_err_t err = esp_http_client_perform(http_client);
-
-    if (err != ESP_OK) {
-        ESP_LOGI(TAG, "HTTP POST request failed: %s", esp_err_to_name(err));
-    }
-    else {
-        int rc = esp_http_client_get_status_code(http_client);
-        if (rc != 200 && rc != 201) {
-            ESP_LOGI(TAG, "HTTP error [%d]: %s", rc, getHttpContent(http_client).c_str());
-        }
-    }
-}
-
 esp_err_t camera_capture(double now)
 {
+    FILE* file = nullptr;
+    std::string fname, fnameTmp;
+
+    if (SD_MMC.cardType() != CARD_NONE) {
+        std::ostringstream fnamebuilder;
+        fnamebuilder << "/sdcard/" << std::fixed << std::setprecision(3) << now;
+
+        fnameTmp = fnamebuilder.str() + ".tmp";
+        fname = fnamebuilder.str() + ".jpg";
+
+        file = fopen(fnameTmp.c_str(), "wb+");
+        if (!file) {
+            ESP_LOGW(TAG, "Failed to open file '%s' in writing mode", fnameTmp.c_str());
+        }
+    }
+
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) {
+        if (file) { fclose(file); }
         ESP_LOGI(TAG, "Camera capture failed");
         return ESP_FAIL;
     }
 
-    assert(fb->format == PIXFORMAT_JPEG);
-
-    std::string bs = Base64::encode(std::string((const char*)fb->buf, fb->len));
-    _send(http_client, {std::make_pair((double)(now * 1000), bs)});
-
+    if (file) {
+        fwrite(fb->buf, fb->len, 1, file);
+        fclose(file);
+        if (0 != rename(fnameTmp.c_str(), fname.c_str())) {
+            ESP_LOGW(TAG, "Failed to rename file '%s' to '%s'", fnameTmp.c_str(), fname.c_str());
+        }
+    }
+    // NOTE, return the frame buffer as soon as possible
     esp_camera_fb_return(fb);
+
     return ESP_OK;
 }
-
-static uint64_t last_timestamp = 0;
-static uint64_t fps_counter_last_timestamp = 0;
-static uint32_t fps = 0;
-static uint64_t elasp_statistics = 0;
-static double delay_statistics = 0;
 
 void setup()
 {
@@ -234,15 +224,22 @@ void setup()
     //heap_caps_print_heap_info(MALLOC_CAP_DEFAULT);
 
 #ifdef LED_PIN
-    // initLED();
+    initLED();
     pinMode(LED_PIN, OUTPUT);
 
 #endif
 
     ESP_ERROR_CHECK(nvs_flash_init());
+    ESP_ERROR_CHECK(initWifi());
+
+    // pinMode(4, INPUT);
+    // digitalWrite(4, LOW);
+    // rtc_gpio_hold_dis(GPIO_NUM_4);
+    if (!SD_MMC.begin("/sdcard", true)) {
+        ESP_LOGW(TAG, "Failed to mount SD card.");
+    }
+
     initCamera();
-    initWifi();
-    http_client = initHttpClient();
 
     ESP_LOGI(TAG, "initializing SNTP.");
     setenv("TZ", "UTC", 2);
@@ -269,6 +266,7 @@ void setup()
 
     initMqtt();
     // initManiplator();
+    xTaskCreate(uploadTask, "Uploader", 65536, NULL, tskIDLE_PRIORITY, &xUploaderHandle);
 }
 
 void loop()
@@ -280,7 +278,7 @@ void loop()
         rc = camera_capture(now);
     }
 
-    if (rc != ESP_OK /* || !mqtt.connected() || !wifiConnected() */) {
+    if (rc != ESP_OK || !mqtt.connected() || !wifiConnected()) {
         ESP_LOGE(TAG, "malfunctioning... %d", rc);
 #ifdef LED_PIN            
         flashLED(500);

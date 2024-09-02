@@ -39,7 +39,7 @@ static void event_handler(void* arg, esp_event_base_t event_base,
     }
 }
 
-void initWifi()
+esp_err_t initWifi()
 {
     ESP_LOGI(TAG, "Starting WiFi");
 
@@ -85,10 +85,13 @@ void initWifi()
     }
     else if (bits & WIFI_FAIL_BIT) {
         ESP_LOGI(TAG, "Failed to connect to SSID:%s", CONFIG_ESP_WIFI_SSID);
+        return ESP_FAIL;
     }
     else {
         ESP_LOGE(TAG, "WIFI failed with UNEXPECTED EVENT");
+        return ESP_FAIL;
     }
+    return ESP_OK;
 }
 
 bool wifiConnected(void)
