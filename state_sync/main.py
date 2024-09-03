@@ -42,11 +42,14 @@ async def query_moonraker(reader, writer, queue):
         status = resp["result"]["status"]
         homed_axes = status["toolhead"]["homed_axes"]
         positions = status["gcode_move"]["gcode_position"]
-        await queue.put({
-            "timestamp": time.time(),
-            "homed": homed_axes == "xyzabc",
-            "positions": positions
-        })
+
+        homed = homed_axes == "xyzabc"
+        if homed:
+            await queue.put({
+                "timestamp": time.time(),
+                "homed": homed,
+                "positions": positions
+            })
 
         elasp = time.time() - last_timestamp
 
