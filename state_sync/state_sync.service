@@ -1,0 +1,16 @@
+[Unit]
+Description=Daemon that sync up arm's status
+After=moonraker.service
+Wants=udev.target
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+Type=simple
+User=jiasen
+RemainAfterExit=yes
+WorkingDirectory=/home/jiasen/state_sync
+ExecStart=/home/jiasen/klippy-env/bin/python main.py
+Restart=always
+RestartSec=10
