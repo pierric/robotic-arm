@@ -1,39 +1,52 @@
 import os
 import time
+import json
 import asyncio
 
 import aiohttp
 from dotenv import load_dotenv
 
 load_dotenv()
-MOONRAKER_URL = os.environ["MOONRAKER_URL"]
+KLIPPER_SOCKET = os.environ["KLIPPER_SOCKET"]
 RESTHEART_URL = os.environ["RESTHEART_URL"]
 RESTHEART_TOKEN = os.environ["RESTHEART_TOKEN"]
 
 
 last_timestamp = 0
-FPS = 30
+FPS = 5
 perframe = 1 / FPS
 fps = 0
 fps_counter_last_timestamp = 0
 
 
-async def query_moonraker(session, queue):
+async def query_moonraker(reader, writer, queue):
     global last_timestamp
     global fps
     global fps_counter_last_timestamp
 
+    query_json = json.dumps({
+        "id": 100,
+        "method": "objects/query",
+        "params": {
+            "objects": {
+                "toolhead": ["homed_axes"],
+                "gcode_move": ["gcode_position"],
+            }
+        }
+    }, separators=(",", ":"))
+
     while(True):
-        try:
-            res = await session.get(MOONRAKER_URL, raise_for_status=True)
-        except aiohttp.ClientResponseError as e:
-            print("error in query", e)
-        else:
-            res = await res.json()
-            status = res["result"]["status"]
-            homed_axes = status["toolhead"]["homed_axes"]
-            positions = status["gcode_move"]["gcode_position"]
-            await queue.put({"homed": homed_axes == "xyzabc", "positions": positions})
+        writer.write(f"{query_json}\x03".encode())
+        resp= await reader.readuntil(b"\x03")
+        resp = json.loads(resp[:-1])
+        status = resp["result"]["status"]
+        homed_axes = status["toolhead"]["homed_axes"]
+        positions = status["gcode_move"]["gcode_position"]
+        await queue.put({
+            "timestamp": time.time(),
+            "homed": homed_axes == "xyzabc",
+            "positions": positions
+        })
 
         elasp = time.time() - last_timestamp
 
@@ -43,8 +56,8 @@ async def query_moonraker(session, queue):
         last_timestamp = time.time()
         fps += 1
 
-        if last_timestamp - fps_counter_last_timestamp > 1:
-            print("fps:", fps)
+        if last_timestamp - fps_counter_last_timestamp > 5:
+            # print("fps:", fps / 5)
             fps = 0
             fps_counter_last_timestamp = last_timestamp
 
@@ -55,22 +68,35 @@ async def sync_state(session, queue):
         "Authorization": "Basic " + RESTHEART_TOKEN,
     }
 
+    batch = []
+
     while(True):
-        doc = await queue.get()
-        payload = {
-            "timestamp": time.time(),
-            **doc
-        }
+        start_time = time.time()
+        while len(batch) < 10:
+            try:
+                batch.append(queue.get_nowait())
+            except asyncio.QueueEmpty:
+                # wait for more, send anyway if timeout
+                if time.time() - start_time > 1:
+                    break
+                await asyncio.sleep(0)
+
+        if not batch:
+            await asyncio.sleep(0)
+            continue
+
         try:
-            await session.post(RESTHEART_URL, json=payload, headers=headers, raise_for_status=True)
+            await session.post(RESTHEART_URL, json=batch, headers=headers, raise_for_status=True)
+            batch = []
         except aiohttp.ClientResponseError as e:
             print("error in sync", e)
 
 
 async def main():
+    reader, writer = await asyncio.open_unix_connection(KLIPPER_SOCKET)
     async with aiohttp.ClientSession() as session:
         queue = asyncio.Queue()
-        task1 = query_moonraker(session, queue)
+        task1 = query_moonraker(reader, writer,queue)
         task2 = sync_state(session, queue)
         await asyncio.gather(task1, task2)
 
