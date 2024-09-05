@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "image-stream-dumper"
+version = "0.1.0"
+description = ""
+authors = ["Jiasen Wu <jiasenwu@hotmail.com>"]
+license = "LGPLv3"
+readme = "README.md"
+packages = [{include = "*", from="src"}]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+requests = "^2.32.3"
+python-dotenv = "^1.0.1"
+pillow = "^10.4.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+dumper = "main:main"
