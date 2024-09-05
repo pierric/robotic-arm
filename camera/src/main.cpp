@@ -13,12 +13,9 @@
 #include <nvs_flash.h>
 
 #include "pins.h"
-#include "config.h"
 #include "utils.h"
-#include "http.h"
 #include "mqtt.h"
 #include "manipulator.h"
-#include "sdcard.h"
 #include "camera.h"
 #include "httpd.h"
 
@@ -28,12 +25,8 @@ extern void onManipulatorCommand(void *message, size_t size, size_t offset, size
 extern void onCameraCommand(void *message, size_t size, size_t offset, size_t total);
 extern esp_err_t initWifi(void);
 extern bool wifiConnected(void);
-extern void uploadTask(void * pvParameters);
 
 static MqttClient mqtt(CONFIG_MQTT_ENDPOINT);
-static TaskHandle_t xUploaderHandle = NULL;
-static TaskHandle_t xCameraHandle = NULL;
-static TaskHandle_t xManipulatorHandle = NULL;
 
 #if defined(LED_PIN)
 static void initLED()
@@ -68,8 +61,6 @@ void setup()
     Serial.begin(115200);
     Serial.setDebugOutput(true);
 #endif
-
-    //heap_caps_print_heap_info(MALLOC_CAP_DEFAULT);
 
 #ifdef LED_PIN
     initLED();
@@ -107,20 +98,6 @@ void setup()
     initMqtt();
     ESP_ERROR_CHECK(initManiplator());
     ESP_ERROR_CHECK(initHttpd());
-
-    // BaseType_t rc;
-    // rc = xTaskCreatePinnedToCore(uploadTask, "Uploader", 16384, NULL, tskIDLE_PRIORITY, &xUploaderHandle, 0);
-    // if (rc != pdPASS) {
-    //     ESP_LOGE(TAG, "Failed to spawn the uploader task [%d]", rc);
-    // }
-    // rc = xTaskCreatePinnedToCore(manipulatorTask, "Manip", 16384, NULL, tskIDLE_PRIORITY, &xManipulatorHandle, 0);
-    // if (rc != pdPASS) {
-    //     ESP_LOGE(TAG, "Failed to spawn the manipulator task [%d]", rc);
-    // }
-    // rc = xTaskCreatePinnedToCore(cameraTask, "Camera", 16384, NULL, 5, &xCameraHandle, 1);
-    // if (rc != pdPASS) {
-    //     ESP_LOGE(TAG, "Failed to spawn the camera task [%d]", rc);
-    // }
 }
 
 void loop()

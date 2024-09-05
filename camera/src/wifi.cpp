@@ -4,8 +4,6 @@
 #include <esp_log.h>
 #include <esp_err.h>
 
-#include "config.h"
-
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
 

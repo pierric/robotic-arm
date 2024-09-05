@@ -11,7 +11,6 @@
 
 #include "utils.h"
 #include "pins.h"
-#include "sdcard.h"
 
 static const char * TAG = "camera";
 
@@ -26,15 +25,8 @@ static const unsigned long xCameraClk = 8;
 static const unsigned long xCameraClk = XCLK_FREQ_MHZ;
 #endif
 
-static const float FPS = 30.;
-
 static camera_config_t config;
 static int camera_enabled = 0;
-
-static uint64_t last_timestamp = 0;
-static uint64_t fps_counter_last_timestamp = 0;
-static uint32_t fps = 0;
-static uint64_t elasp_statistics = 0;
 
 void initCamera()
 {
@@ -116,44 +108,6 @@ void initCamera()
     }
 }
 
-static char *buffer;
-
-esp_err_t camera_capture(double now)
-{
-    FILE* file = nullptr;
-    std::string fname, fnameTmp;
-    std::ostringstream fnamebuilder;
-    fnamebuilder << "/sdcard/" << std::fixed << std::setprecision(3) << now;
-
-    fnameTmp = fnamebuilder.str() + ".tmp";
-    fname = fnamebuilder.str() + ".jpg";
-
-    camera_fb_t* fb = esp_camera_fb_get();
-    if (!fb) {
-        // fclose(file);
-        ESP_LOGI(TAG, "Camera capture failed");
-        return ESP_FAIL;
-    }
-    size_t len = fb->len;
-    assert(fb->len < 128*1024);
-    memcpy(buffer, fb->buf, fb->len);
-    esp_camera_fb_return(fb);
-
-    file = fopen(fnameTmp.c_str(), "w");
-    if (!file) {
-        ESP_LOGW(TAG, "Failed to write file '%s', errno: %d", fnameTmp.c_str(), errno);
-        return ESP_FAIL;
-    }
-    fwrite(buffer, len, 1, file);
-    fclose(file);    
-
-    if (0 != rename(fnameTmp.c_str(), fname.c_str())) {
-        ESP_LOGW(TAG, "Failed to rename file '%s' to '%s'", fnameTmp.c_str(), fname.c_str());
-    }
-
-    return ESP_OK;
-}
-
 void onCameraCommand(void *message, size_t size, size_t offset, size_t total)
 {
     if (strncmp((const char *)message, "on", 2) == 0) {
@@ -163,32 +117,5 @@ void onCameraCommand(void *message, size_t size, size_t offset, size_t total)
     else {
         ESP_LOGI(TAG, "disabling camera");
         camera_enabled = 0;
-    }
-}
-
-void cameraTask(void * pvParameters)
-{
-    buffer = (char *)malloc(128 * 1024);
-    while(true) {
-        if (camera_enabled && has_sdcard()) {
-            camera_capture(get_timestamp());
-        }
-
-        uint64_t end = esp_timer_get_time();
-        uint64_t elasp = end - last_timestamp;
-        elasp_statistics += elasp;
-        float perframe = (1000000. / FPS);
-        if (elasp < perframe) {
-            vTaskDelay((perframe - elasp) / (1000.0 * portTICK_PERIOD_MS));
-        }
-        last_timestamp = esp_timer_get_time();
-
-        if (last_timestamp - fps_counter_last_timestamp > 5000000) {
-            ESP_LOGI(TAG, "fps: %d, avg_elasp: %f", int(fps/5), elasp_statistics / (fps+0.01));
-            fps = 0;
-            elasp_statistics = 0;
-            fps_counter_last_timestamp = last_timestamp;
-        }
-        fps += 1;
     }
 }
