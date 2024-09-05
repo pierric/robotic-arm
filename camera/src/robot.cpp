@@ -1,3 +1,5 @@
+#ifdef ENABLE_CANBUS_SUPPORT
+
 #include <vector>
 #include <optional>
 #include <sstream>
@@ -105,3 +107,5 @@ std::string dump_status(const struct RobotStatus& status)
 
     return oss.str();
 }
+
+#endif

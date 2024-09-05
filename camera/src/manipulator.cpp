@@ -12,7 +12,9 @@
 #include "utils.h"
 #include "http.h"
 
-static const int servoPin = 12;
+// use GPIO-1 if sdcard in 4-bit mode (ttl is sacrifised)
+// or GPIO-13 if in 1-bit mode or without sdcard
+static const int servoPin = 13;
 
 #ifndef ARDUINO
 #include "iot_servo.h"
@@ -36,13 +38,13 @@ static void _init(void)
         .min_width_us = 500,
         .max_width_us = 2500,
         .freq = 50,
-        .timer_number = LEDC_TIMER_1,
+        .timer_number = LEDC_TIMER_0,
         .channels = {
             .servo_pin = {
                 (gpio_num_t) servoPin,
             },
             .ch = {
-                LEDC_CHANNEL_1,
+                LEDC_CHANNEL_0,
             },
         },
         .channel_number = 1,
@@ -77,9 +79,8 @@ static const char * TAG = "gripper";
 extern esp_http_client_handle_t initHttpClient();
 extern double get_timestamp();
 
-const int syncFPS = 30;
+const int syncFPS = 10;
 const int QUEUE_THRESHOLD = syncFPS;
-static TaskHandle_t xSyncHandle = NULL;
 
 void onManipulatorCommand(void *message, size_t size, size_t offset, size_t total)
 {
@@ -127,7 +128,7 @@ static void _send(esp_http_client_handle_t http_client, std::vector<std::pair<do
     }
 }
 
-void vSyncTask(void * pvParameters)
+void manipulatorTask(void * pvParameters)
 {
     esp_http_client_handle_t http_client = initHttpClient();
 
@@ -168,7 +169,6 @@ esp_err_t initManiplator(void)
 {
     _init();
     ESP_LOGI(TAG, "servo: attached.");
-    _write_angle(0);
-    // xTaskCreate(vSyncTask, "SyncTask", 65536, NULL, tskIDLE_PRIORITY, &xSyncHandle);
+    _write_angle(1);
     return ESP_OK;
 }

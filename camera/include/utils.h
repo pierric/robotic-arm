@@ -13,9 +13,12 @@ pair<string, optional<int>> parseEndpoint(const string& spec);
 
 double get_timestamp();
 
-// IDF_VER == 4.*
+pair<uint32_t, uint32_t> float_to_rational(float val);
+
+#if ESP_IDF_VERSION_MAJOR == 4
 #define FMT_UINT32_T "%u"
-// IDF_VER == 5.*
-// #define FMT_UINT32_T "%lu"
+#elif ESP_IDF_VERSION_MAJOR == 5
+#define FMT_UINT32_T "%lu"
+#endif
 
 #endif

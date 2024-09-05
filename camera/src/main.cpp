@@ -5,42 +5,24 @@
 #include <ostream>
 #include <iomanip>
 #include <base64.h>
-#include <esp_camera.h>
 #include <esp_timer.h>
 #include <esp_sntp.h>
 #include <esp_log.h>
 #include <esp_heap_caps.h>
 #include <driver/gpio.h>
 #include <nvs_flash.h>
-#include <SD_MMC.h>
 
+#include "pins.h"
 #include "config.h"
 #include "utils.h"
-#include "pins.h"
 #include "http.h"
 #include "mqtt.h"
 #include "manipulator.h"
-
-#define QQ(x) #x
-#define Q(x) QQ(x)
-
-#if !defined(WIFI_WATCHDOG)
-#define WIFI_WATCHDOG 15000
-#endif
-
-// Camera module bus communications frequency.
-// Originally: config.xclk_freq_mhz = 20000000, but this lead to visual
-// artifacts on many modules. See
-// https://github.com/espressif/esp32-camera/issues/150#issuecomment-726473652
-// et al.
-#if !defined(XCLK_FREQ_MHZ)
-unsigned long xCameraClk = 8;
-#else
-unsigned long xCameraClk = XCLK_FREQ_MHZ;
-#endif
+#include "sdcard.h"
+#include "camera.h"
+#include "httpd.h"
 
 static const char * TAG = "main";
-static const float FPS = 30.;
 
 extern void onManipulatorCommand(void *message, size_t size, size_t offset, size_t total);
 extern void onCameraCommand(void *message, size_t size, size_t offset, size_t total);
@@ -48,18 +30,15 @@ extern esp_err_t initWifi(void);
 extern bool wifiConnected(void);
 extern void uploadTask(void * pvParameters);
 
-static int camera_enabled = 0;
 static MqttClient mqtt(CONFIG_MQTT_ENDPOINT);
-static uint64_t last_timestamp = 0;
-static uint64_t fps_counter_last_timestamp = 0;
-static uint32_t fps = 0;
-static uint64_t elasp_statistics = 0;
-static double delay_statistics = 0;
 static TaskHandle_t xUploaderHandle = NULL;
+static TaskHandle_t xCameraHandle = NULL;
+static TaskHandle_t xManipulatorHandle = NULL;
 
 #if defined(LED_PIN)
 static void initLED()
 {
+    ESP_LOGI(TAG, "setting up LED");
     gpio_config_t io_conf = {
         .pin_bit_mask = 1ULL << LED_PIN,
         .mode = GPIO_MODE_OUTPUT,
@@ -75,143 +54,12 @@ static void flashLED(int flashtime)
 }
 #endif
 
-static camera_config_t config;
-static void initCamera()
-{
-    config.ledc_channel = LEDC_CHANNEL_0;
-    config.ledc_timer = LEDC_TIMER_0;
-    config.pin_d0 = Y2_GPIO_NUM;
-    config.pin_d1 = Y3_GPIO_NUM;
-    config.pin_d2 = Y4_GPIO_NUM;
-    config.pin_d3 = Y5_GPIO_NUM;
-    config.pin_d4 = Y6_GPIO_NUM;
-    config.pin_d5 = Y7_GPIO_NUM;
-    config.pin_d6 = Y8_GPIO_NUM;
-    config.pin_d7 = Y9_GPIO_NUM;
-    config.pin_xclk = XCLK_GPIO_NUM;
-    config.pin_pclk = PCLK_GPIO_NUM;
-    config.pin_vsync = VSYNC_GPIO_NUM;
-    config.pin_href = HREF_GPIO_NUM;
-    config.pin_sccb_sda = SIOD_GPIO_NUM;
-    config.pin_sccb_scl = SIOC_GPIO_NUM;
-    config.pin_pwdn = PWDN_GPIO_NUM;
-    config.pin_reset = RESET_GPIO_NUM;
-    config.xclk_freq_hz = xCameraClk * 1000000;
-    config.pixel_format = PIXFORMAT_JPEG;
-    config.frame_size = FRAMESIZE_VGA;
-    config.jpeg_quality = 12;
-    config.fb_location = CAMERA_FB_IN_PSRAM;
-    config.fb_count = 8;
-    config.grab_mode = CAMERA_GRAB_LATEST;
-
-#if defined(CAMERA_MODEL_ESP_EYE)
-    pinMode(13, INPUT_PULLUP);
-    pinMode(14, INPUT_PULLUP);
-#endif
-
-    // camera init
-    esp_err_t err = esp_camera_init(&config);
-    if (err != ESP_OK) {
-        abort();
-    } else {
-        ESP_LOGI(TAG, "Camera init succeeded");
-
-        // Get a reference to the sensor
-        sensor_t* s = esp_camera_sensor_get();
-        ESP_LOGI(TAG, "Camera module: %d", s->id.PID);
-        s->set_vflip(s, 1);           // 0 = disable , 1 = enable
-
-        /*
-         * Add any other defaults you want to apply at startup here:
-         * uncomment the line and set the value as desired (see the comments)
-         *
-         * these are defined in the esp headers here:
-         * https://github.com/espressif/esp32-camera/blob/master/driver/include/sensor.h#L149
-         */
-
-        // s->set_framesize(s, FRAMESIZE_SVGA); //
-        // FRAMESIZE_[QQVGA|HQVGA|QVGA|CIF|VGA|SVGA|XGA|SXGA|UXGA|QXGA(ov3660)]);
-        // s->set_quality(s, val);       // 10 to 63
-        // s->set_brightness(s, 0);      // -2 to 2
-        // s->set_contrast(s, 0);        // -2 to 2
-        // s->set_saturation(s, 0);      // -2 to 2
-        // s->set_special_effect(s, 0);  // 0 to 6 (0 - No Effect, 1 - Negative,
-        // 2 - Grayscale, 3 - Red Tint, 4 - Green Tint, 5 - Blue Tint, 6 -
-        // Sepia) s->set_whitebal(s, 1);        // aka 'awb' in the UI; 0 =
-        // disable , 1 = enable s->set_awb_gain(s, 1);        // 0 = disable , 1
-        // = enable s->set_wb_mode(s, 0);         // 0 to 4 - if awb_gain
-        // enabled (0 - Auto, 1 - Sunny, 2 - Cloudy, 3 - Office, 4 - Home)
-        // s->set_exposure_ctrl(s, 1);
-        // // 0 = disable , 1 = enable s->set_aec2(s, 0);            // 0 =
-        // disable , 1 = enable s->set_ae_level(s, 0);        // -2 to 2
-        // s->set_aec_value(s, 300);     // 0 to 1200 s->set_gain_ctrl(s, 1); //
-        // 0 = disable , 1 = enable s->set_agc_gain(s, 0);        // 0 to 30
-        // s->set_gainceiling(s, (gainceiling_t)0);  // 0 to 6 s->set_bpc(s, 0);
-        // // 0 = disable , 1 = enable s->set_wpc(s, 1);             // 0 =
-        // disable , 1 = enable s->set_raw_gma(s, 1);         // 0 = disable , 1
-        // = enable s->set_lenc(s, 1);            // 0 = disable , 1 = enable
-        // s->set_hmirror(s, 0);         // 0 = disable , 1 = enable
-        // s->set_dcw(s, 1);             // 0 = disable , 1 = enable
-        // s->set_colorbar(s, 0);        // 0 = disable , 1 = enable
-    }
-}
-
 void initMqtt()
 {
     mqtt.connect();
     mqtt.subscribe("/manipulator/command", onManipulatorCommand);
     mqtt.subscribe("/camera/command", onCameraCommand);
     ESP_LOGI(TAG, "MQTT topic subscribed.");
-}
-
-void onCameraCommand(void *message, size_t size, size_t offset, size_t total)
-{
-    if (strncmp((const char *)message, "on", 2) == 0) {
-        ESP_LOGI(TAG, "enabling camera");
-        camera_enabled = 1;
-    }
-    else {
-        ESP_LOGI(TAG, "disabling camera");
-        camera_enabled = 0;
-    }
-}
-
-esp_err_t camera_capture(double now)
-{
-    FILE* file = nullptr;
-    std::string fname, fnameTmp;
-
-    if (SD_MMC.cardType() != CARD_NONE) {
-        std::ostringstream fnamebuilder;
-        fnamebuilder << "/sdcard/" << std::fixed << std::setprecision(3) << now;
-
-        fnameTmp = fnamebuilder.str() + ".tmp";
-        fname = fnamebuilder.str() + ".jpg";
-
-        file = fopen(fnameTmp.c_str(), "wb+");
-        if (!file) {
-            ESP_LOGW(TAG, "Failed to open file '%s' in writing mode", fnameTmp.c_str());
-        }
-    }
-
-    camera_fb_t* fb = esp_camera_fb_get();
-    if (!fb) {
-        if (file) { fclose(file); }
-        ESP_LOGI(TAG, "Camera capture failed");
-        return ESP_FAIL;
-    }
-
-    if (file) {
-        fwrite(fb->buf, fb->len, 1, file);
-        fclose(file);
-        if (0 != rename(fnameTmp.c_str(), fname.c_str())) {
-            ESP_LOGW(TAG, "Failed to rename file '%s' to '%s'", fnameTmp.c_str(), fname.c_str());
-        }
-    }
-    // NOTE, return the frame buffer as soon as possible
-    esp_camera_fb_return(fb);
-
-    return ESP_OK;
 }
 
 void setup()
@@ -225,19 +73,10 @@ void setup()
 
 #ifdef LED_PIN
     initLED();
-    pinMode(LED_PIN, OUTPUT);
-
 #endif
 
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(initWifi());
-
-    // pinMode(4, INPUT);
-    // digitalWrite(4, LOW);
-    // rtc_gpio_hold_dis(GPIO_NUM_4);
-    if (!SD_MMC.begin("/sdcard", true)) {
-        ESP_LOGW(TAG, "Failed to mount SD card.");
-    }
 
     initCamera();
 
@@ -262,47 +101,37 @@ void setup()
     }
     else {
         ESP_LOGI(TAG, "... still not ready");
+        abort();
     }
 
     initMqtt();
-    // initManiplator();
-    xTaskCreate(uploadTask, "Uploader", 65536, NULL, tskIDLE_PRIORITY, &xUploaderHandle);
+    ESP_ERROR_CHECK(initManiplator());
+    ESP_ERROR_CHECK(initHttpd());
+
+    // BaseType_t rc;
+    // rc = xTaskCreatePinnedToCore(uploadTask, "Uploader", 16384, NULL, tskIDLE_PRIORITY, &xUploaderHandle, 0);
+    // if (rc != pdPASS) {
+    //     ESP_LOGE(TAG, "Failed to spawn the uploader task [%d]", rc);
+    // }
+    // rc = xTaskCreatePinnedToCore(manipulatorTask, "Manip", 16384, NULL, tskIDLE_PRIORITY, &xManipulatorHandle, 0);
+    // if (rc != pdPASS) {
+    //     ESP_LOGE(TAG, "Failed to spawn the manipulator task [%d]", rc);
+    // }
+    // rc = xTaskCreatePinnedToCore(cameraTask, "Camera", 16384, NULL, 5, &xCameraHandle, 1);
+    // if (rc != pdPASS) {
+    //     ESP_LOGE(TAG, "Failed to spawn the camera task [%d]", rc);
+    // }
 }
 
 void loop()
 {
-    esp_err_t rc = ESP_OK;
-    double now = get_timestamp();
-
-    if (camera_enabled) {
-        rc = camera_capture(now);
-    }
-
-    if (rc != ESP_OK || !mqtt.connected() || !wifiConnected()) {
-        ESP_LOGE(TAG, "malfunctioning... %d", rc);
-#ifdef LED_PIN            
+    if (!mqtt.connected() || !wifiConnected()) {
+        ESP_LOGE(TAG, "disconnected...");
+#ifdef LED_PIN
         flashLED(500);
-#endif            
+#endif
     }
-
-    uint64_t end = esp_timer_get_time();
-    uint64_t elasp = end - last_timestamp;
-    elasp_statistics += elasp;
-    float perframe = (1000000. / FPS);
-    if (elasp < perframe) {
-        delay_statistics += (perframe - elasp) / 1000.0;
-        vTaskDelay((perframe - elasp) / (1000.0 * portTICK_PERIOD_MS));
-    }
-    last_timestamp = esp_timer_get_time();
-
-    if (last_timestamp - fps_counter_last_timestamp > 1000000) {
-        ESP_LOGI(TAG, "fps: " FMT_UINT32_T ", avg_elasp: %f, avg_delay: %f", fps, elasp_statistics / (fps+0.01), delay_statistics / (fps+0.1));
-        fps = 0;
-        elasp_statistics = 0;
-        delay_statistics = 0;
-        fps_counter_last_timestamp = last_timestamp;
-    }
-    fps += 1;
+    vTaskDelay(500 / portTICK_PERIOD_MS);
 }
 
 #ifndef ARDUINO
