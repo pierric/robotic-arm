@@ -60,7 +60,7 @@ async def query_moonraker(reader, writer, queue):
         fps += 1
 
         if last_timestamp - fps_counter_last_timestamp > 5:
-            # print("fps:", fps / 5)
+            print("fps:", fps / 5)
             fps = 0
             fps_counter_last_timestamp = last_timestamp
 
