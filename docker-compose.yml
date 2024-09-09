@@ -1,0 +1,50 @@
+services:
+  restheart:
+    image: softinstigate/restheart:latest
+    environment:
+      RHO: >
+          /mclient/connection-string->"mongodb://mongodb1:27017/?replicaSet=rs0";
+          /http-listener/host->"0.0.0.0";
+    volumes:
+      - $PWD/config/restheart.yml:/opt/restheart/etc/overrides.yml
+    depends_on:
+      mongodb1:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    command: [ "-o", "/opt/restheart/etc/overrides.yml" ]
+
+  mongodb1:
+    image: mongo:7.0
+    command: [ "--bind_ip_all", "--replSet", "rs0" ]
+    volumes:
+      - $DATA_STORE:/data/db
+    ports:
+      - 27017:27017
+    healthcheck:
+      test: echo "try { rs.status() } catch (err) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongodb1:27017'}]}) }" | mongosh --port 27017 --quiet
+      interval: 5s
+      timeout: 10s
+      retries: 5
+      start_period: 5s
+
+  mosquitto:
+    image: eclipse-mosquitto
+    ports:
+      - "1883:1883"
+      - "8883:8883"
+    volumes:
+      - $PWD/config/mosquitto.conf:/mosquitto/config/mosquitto.conf
+
+  dumper:
+    build: ./image_stream_dumper
+    links:
+      - restheart
+      - mosquitto
+    environment:
+      - RESTHEART_TOKEN
+      - RESTHEART_ENDPOINT=http://restheart:8080
+      - CAM_STREAMING_URL=http://192.168.178.93
+      - MQTT_BROKER_URL=mosquitto
+      - PYTHONUNBUFFERED=1
+    command: /src/.venv/bin/dumper

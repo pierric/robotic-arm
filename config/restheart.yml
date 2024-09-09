@@ -1,0 +1,20 @@
+/tokenBasicAuthMechanism/enabled: true
+/jwtAuthenticationMechanism/enabled: false
+/jwtTokenManager/enabled: false
+/rndTokenManager:
+  enabled: true
+  ttl: 600000
+  srv-uri: /tokens
+/basicAuthMechanism:
+    enabled: true
+    authenticator: fileRealmAuthenticator
+/fileRealmAuthenticator:
+  enabled: true
+  users:
+    - userid: admin
+      password: secret
+      roles: [admin]
+/authCookieHandler/enabled: true
+/authCookieSetter:
+    enabled: true
+    name: rh_auth
