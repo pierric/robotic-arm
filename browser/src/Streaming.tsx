@@ -6,11 +6,24 @@ import CardContent from '@mui/material/CardContent';
 import CardActions from '@mui/material/CardActions';
 import Stack from '@mui/material/Stack';
 import Slider from '@mui/material/Slider';
+import Box from '@mui/material/Box';
+import List from '@mui/material/List';
+import ListItem from '@mui/material/ListItem';
+import ListItemText from '@mui/material/ListItemText';
 import CircleIcon from '@mui/icons-material/Circle';
+import AddIcon from '@mui/icons-material/Add';
 import HomeIcon from '@mui/icons-material/Home';
+import SaveIcon from '@mui/icons-material/Save';
+import ClearIcon from '@mui/icons-material/Clear';
+import DoneIcon from '@mui/icons-material/Done';
 import PhotoCameraIcon from '@mui/icons-material/PhotoCamera';
 import WarningIcon from '@mui/icons-material/Warning';
 import PowerSettingsNewIcon from '@mui/icons-material/PowerSettingsNew';
+import Dialog from '@mui/material/Dialog';
+import DialogTitle from '@mui/material/DialogTitle';
+import DialogContent from '@mui/material/DialogContent';
+import DialogActions from '@mui/material/DialogActions';
+import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import ImageSlider from 'react-slick';
 import mqtt from 'mqtt';
@@ -18,7 +31,7 @@ import useState from 'react-usestateref';
 import 'slick-carousel/slick/slick.css';
 import 'slick-carousel/slick/slick-theme.css';
 
-import { SharedState, CapturedImage, Mode } from './Common'
+import { SharedState, CapturedImage, Mode, CameraStreamingURL, MongoURL, MqttURL, MoonrakerURL } from './Common'
 
 interface AxisLimits {
   x: [number, number],
@@ -66,11 +79,133 @@ function Axis({name, homed, value, limits, runGCode}: AxisProps) {
   );
 }
 
-export default function Streaming({imageQueue, setImageQueue, setMode}: SharedState) {
+type SavePathDialogProps = {
+  open: boolean,
+  onYes: (name: string) => void,
+  onNo: () => void,
+}
 
-  const mqttURL = 'ws://localhost:8883';
-  const mongoURL = 'localhost:8080';
-  const moonrakerURL = 'ws://192.168.178.34:7125/websocket'
+function SavePathDialog({open, onYes, onNo}: SavePathDialogProps) {
+
+  const [error, setError] = useState(false);
+  const valueRef = useRef<HTMLInputElement>();
+
+  const handleOk = () => {
+    const value = valueRef.current!.value;
+    if (value === "") {
+      setError(true);
+    }
+    else {
+      onYes(value);
+    }
+  }
+
+  const handleChange = () => {
+    setError(false);
+  }
+
+  return (
+    <Dialog onClose={onNo} open={open}>
+      <DialogTitle>Save As</DialogTitle>
+        <DialogContent>
+          <TextField sx={{mt: 0.5}} id="name" label="name" variant="outlined" inputRef={valueRef} error={error} onChange={handleChange}/>
+        </DialogContent>
+        <DialogActions>
+          <IconButton aria-label="ok" color="primary" onClick={handleOk}>
+            <DoneIcon />
+          </IconButton>
+          <IconButton aria-label="cancel" color="primary" onClick={onNo}>
+            <ClearIcon />
+          </IconButton>
+        </DialogActions>
+    </Dialog>
+  )
+}
+
+type PathStepProps = {
+  timestamp: number,
+  index: number,
+}
+
+function PathStep({timestamp, index}: PathStepProps) {
+  const datetime = new Date(timestamp * 1000);
+  return (
+      <ListItem>
+        <ListItemText primary={datetime.toISOString()} />
+      </ListItem>
+  )
+}
+
+type PathRecorderProps = {
+  ready: boolean,
+}
+
+function PathRecorder({ready}: PathRecorderProps) {
+
+  const [openSavePath, setOpenSavePath] = useState(false);
+  const [path, setPath] = useState<number[]>([]);
+
+  const generate = (element: React.ReactElement<any>) => {
+    return path.map((value) =>
+      React.cloneElement(element, {
+        key: value,
+        timestamp: value,
+      }),
+    );
+  }
+
+  const handleAddStep = () => {
+    const timestamp = Date.now() / 1000;
+    setPath([...path, timestamp]);
+  }
+
+  const openSaveDialog = () => {
+    setOpenSavePath(true);
+  }
+
+  const cancelSaveDialog = () => {
+    setOpenSavePath(false);
+  }
+
+  const confirmSaveDialog = (name: string) => {
+    setOpenSavePath(false);
+    fetch(`http://${MongoURL}/paths`, {
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      method: 'POST',
+      body: JSON.stringify({
+        name: name,
+        steps: path,
+      }),
+    });
+  }
+
+  const handleClear = () => {
+    setPath([]);
+  }
+
+  return (
+    <Box component="section" sx={{ ml: "20px", flexGrow: 1, maxWidth: 230, border: "dashed black 2px" }}>
+      <IconButton aria-label="add step" color="primary" onClick={handleAddStep} disabled={!ready}>
+        <AddIcon />
+      </IconButton>
+      <IconButton aria-label="clear" color="primary" onClick={handleClear} disabled={!ready}>
+        <ClearIcon />
+      </IconButton>
+      <IconButton aria-label="save path" color="primary" onClick={openSaveDialog} disabled={!ready}>
+        <SaveIcon />
+      </IconButton>
+      <List dense={true}>
+        {generate(<PathStep timestamp={0} index={0} />)}
+      </List>
+      <SavePathDialog open={openSavePath} onYes={confirmSaveDialog} onNo={cancelSaveDialog}/>
+    </Box>
+  )
+}
+
+export default function Streaming({imageQueue, setImageQueue, setMode}: SharedState) {
 
   const [armStatus, setArmStatus, armStatusRef] = useState<string>('off');
   const [axisLimits, setAxisLimits, axisLimitsRef] = useState<AxisLimits | null>(null);
@@ -86,7 +221,7 @@ export default function Streaming({imageQueue, setImageQueue, setMode}: SharedSt
   useEffect(() => {
     document.cookie = 'rh_auth="Basic YWRtaW46c2VjcmV0"; Version=1; Path=/; Domain=localhost; Secure; SameSite=Strict';
 
-    fetch(`http://${mongoURL}/camera?page=1&pagesize=8`, {
+    fetch(`http://${MongoURL}/camera?page=1&pagesize=8`, {
       headers: {
         'Content-Type': 'application/json'
       },
@@ -95,7 +230,7 @@ export default function Streaming({imageQueue, setImageQueue, setMode}: SharedSt
       setImageQueue?.(json);
     });
 
-    const wsMongo = new WebSocket(`ws://${mongoURL}/camera/_streams/all`);
+    const wsMongo = new WebSocket(`ws://${MongoURL}/camera/_streams/all`);
     wsMongo.onerror = console.error;
     wsMongo.onmessage = (data) => {
       if (data instanceof MessageEvent) {
@@ -105,9 +240,9 @@ export default function Streaming({imageQueue, setImageQueue, setMode}: SharedSt
       }
     };
 
-    const mqttClient = mqtt.connect(mqttURL)
+    const mqttClient = mqtt.connect(MqttURL)
     mqttClient.on('connect', () => {
-      mqttClient.publish('/camera/command', 'off');
+      // mqttClient.publish('/camera/command', 'off');
 
       toggleCamera.current = () => {
         setCameraState(!cameraStateRef.current);
@@ -124,7 +259,7 @@ export default function Streaming({imageQueue, setImageQueue, setMode}: SharedSt
       console.log(topic.toString(), message.toString());
     });
 
-    const wsMoonraker = new WebSocket(moonrakerURL);
+    const wsMoonraker = new WebSocket(MoonrakerURL);
     const intervalRoutine = setInterval(() => {
       if (wsMoonraker.readyState === WebSocket.OPEN) {
         wsMoonraker.send(JSON.stringify({
@@ -247,8 +382,9 @@ export default function Streaming({imageQueue, setImageQueue, setMode}: SharedSt
     homed ? 'green': 'orange';
 
   return (
-    <div style={{ display: 'flex' }}>
-      <div style={{ width: '50%' }}>
+    <div>
+    <div style={{ display: 'flex', flexWrap: 'wrap' }}>
+      <div style={{ flexGrow: 2 }}>
         <Card>
           <CardContent>
             <Axis name="X" homed={homed} value={positions[0]} limits={axisLimits?.x} runGCode={runGCode.current!} />
@@ -280,18 +416,17 @@ export default function Streaming({imageQueue, setImageQueue, setMode}: SharedSt
           </CardActions>
         </Card>
       </div>
+      <PathRecorder ready={armStatus === 'ready' && homed}/>
       <div style={{ flexGrow: 1 }}>
       {
         imageQueue.length === 0 ?
           <div>Loading...</div> :
         <div>
           <img src={`data:image/jpg;base64,${imageQueue.slice(-1)[0].image}`} alt='from camera'/>
-          <div style={{ marginTop: '40px' }}>
-            <Button variant="contained" onClick={handleChooseClick}>Pick up something</Button>
-          </div>
         </div>
       }
       </div>
+    </div>
     </div>
   );
 
