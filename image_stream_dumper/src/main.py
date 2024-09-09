@@ -7,7 +7,7 @@ import time
 
 import aiomqtt
 import aiohttp
-from PIL import Image, ExifTags
+from PIL import Image, ExifTags, UnidentifiedImageError
 
 PART_BOUNDARY = b"123456789000000000000987654321"
 _STREAM_BOUNDARY = (b"\r\n--" + PART_BOUNDARY + b"\r\n")
@@ -47,7 +47,12 @@ async def process(session: aiohttp.ClientSession, streaming: aiohttp.ClientRespo
             if not end:
                 continue
 
-            image = Image.open(io.BytesIO(full_chunk))
+            try:
+                image = Image.open(io.BytesIO(full_chunk))
+            except UnidentifiedImageError:
+                print("bad or incomplete data for an image")
+                continue
+
             exif = image.getexif()
             idf = exif.get_ifd(ExifTags.IFD.Exif)
             time = exif[0x132]
