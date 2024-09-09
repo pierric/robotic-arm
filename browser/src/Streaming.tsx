@@ -31,7 +31,7 @@ import useState from 'react-usestateref';
 import 'slick-carousel/slick/slick.css';
 import 'slick-carousel/slick/slick-theme.css';
 
-import { SharedState, CapturedImage, Mode, CameraStreamingURL, MongoURL, MqttURL, MoonrakerURL } from './Common'
+import { SharedState, CapturedImage, Mode, CameraStreamingURL, MongoURL, MqttURL, MoonrakerURL, Hostname } from './Common'
 
 interface AxisLimits {
   x: [number, number],
@@ -187,7 +187,7 @@ function PathRecorder({ready}: PathRecorderProps) {
   }
 
   return (
-    <Box component="section" sx={{ ml: "20px", flexGrow: 1, maxWidth: 230, border: "dashed black 2px" }}>
+    <Box component="section" sx={{ m: "0px 20px", flexGrow: 1, maxWidth: 230, border: "dashed black 2px" }}>
       <IconButton aria-label="add step" color="primary" onClick={handleAddStep} disabled={!ready}>
         <AddIcon />
       </IconButton>
@@ -219,7 +219,10 @@ export default function Streaming({imageQueue, setImageQueue, setMode}: SharedSt
   const emergencyStop = useRef<((() => void) | null)>(null);
 
   useEffect(() => {
-    document.cookie = 'rh_auth="Basic YWRtaW46c2VjcmV0"; Version=1; Path=/; Domain=localhost; Secure; SameSite=Strict';
+
+    const cookie = `rh_auth="Basic YWRtaW46c2VjcmV0"; Version=1; Path=/; Domain=${Hostname}; SameSite=lax`;
+    console.log("cookie", cookie)
+    document.cookie = cookie
 
     fetch(`http://${MongoURL}/camera?page=1&pagesize=8`, {
       headers: {
@@ -417,11 +420,11 @@ export default function Streaming({imageQueue, setImageQueue, setMode}: SharedSt
         </Card>
       </div>
       <PathRecorder ready={armStatus === 'ready' && homed}/>
-      <div style={{ flexGrow: 1 }}>
+      <div style={{ alignSelf: "center", width: "min-content" }}>
       {
         imageQueue.length === 0 ?
           <div>Loading...</div> :
-        <div>
+        <div style={{  }}>
           <img src={`data:image/jpg;base64,${imageQueue.slice(-1)[0].image}`} alt='from camera'/>
         </div>
       }
