@@ -41,8 +41,6 @@ static int _inject_exif(camera_fb_t *fb, const std::unique_ptr<char []> &buffer)
 
     size_t total_size = exif_len + fb->len - data_offset;
 
-    ESP_LOGI(TAG, "%d %d %d", exif_len, data_offset, fb->len);
-
     if (total_size > buffer_max_len) {
         return -1;
     }
