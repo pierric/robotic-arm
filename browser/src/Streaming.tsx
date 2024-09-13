@@ -1,7 +1,9 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useImperativeHandle , MutableRefObject} from 'react';
+import { SxProps } from '@mui/system';
 import Button from '@mui/material/Button';
 import IconButton from '@mui/material/IconButton';
 import Card from '@mui/material/Card';
+import CardHeader from '@mui/material/CardHeader';
 import CardContent from '@mui/material/CardContent';
 import CardActions from '@mui/material/CardActions';
 import Stack from '@mui/material/Stack';
@@ -17,7 +19,12 @@ import SaveIcon from '@mui/icons-material/Save';
 import ClearIcon from '@mui/icons-material/Clear';
 import DoneIcon from '@mui/icons-material/Done';
 import PhotoCameraIcon from '@mui/icons-material/PhotoCamera';
+import RemoveIcon from '@mui/icons-material/Remove';
 import WarningIcon from '@mui/icons-material/Warning';
+import KeyboardArrowLeftIcon from '@mui/icons-material/KeyboardArrowLeft';
+import KeyboardArrowRightIcon from '@mui/icons-material/KeyboardArrowRight';
+import KeyboardDoubleArrowRightIcon from '@mui/icons-material/KeyboardDoubleArrowRight';
+import KeyboardDoubleArrowLeftIcon from '@mui/icons-material/KeyboardDoubleArrowLeft';
 import PowerSettingsNewIcon from '@mui/icons-material/PowerSettingsNew';
 import Dialog from '@mui/material/Dialog';
 import DialogTitle from '@mui/material/DialogTitle';
@@ -25,13 +32,22 @@ import DialogContent from '@mui/material/DialogContent';
 import DialogActions from '@mui/material/DialogActions';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
-import ImageSlider from 'react-slick';
+import Table from '@mui/material/Table';
+import TableBody from '@mui/material/TableBody';
+import TableCell from '@mui/material/TableCell';
+import TableContainer from '@mui/material/TableContainer';
+import TableHead from '@mui/material/TableHead';
+import TableRow from '@mui/material/TableRow';
+import Paper from '@mui/material/Paper';
 import mqtt from 'mqtt';
 import useState from 'react-usestateref';
 import 'slick-carousel/slick/slick.css';
 import 'slick-carousel/slick/slick-theme.css';
 
-import { SharedState, CapturedImage, Mode, CameraStreamingURL, MongoURL, MqttURL, MoonrakerURL, Hostname } from './Common'
+import {
+  SharedState, CapturedImage, MongoURL,
+  MqttURL, MoonrakerURL, Hostname, DynamicsURL,
+} from './Common'
 
 interface AxisLimits {
   x: [number, number],
@@ -42,12 +58,25 @@ interface AxisLimits {
   c: [number, number],
 }
 
+interface AxisHasValue {
+  getValue: () => number,
+  setValue: (newvalue: number) => void,
+  getLimit: () => [number, number] | null,
+}
+
+interface Mark {
+    value: number;
+    label?: React.ReactNode;
+}
+
 type AxisProps = {
   name: string,
   homed: boolean,
-  value: number,
+  step?: number,
+  logscale?: boolean,
   limits?: [number, number],
-  runGCode: (gcode: string) => void,
+  marks?: Mark[],
+  onUpdate: (value: number) => void,
 }
 
 const PresetPostures: Record<string, number[]> = {
@@ -56,13 +85,36 @@ const PresetPostures: Record<string, number[]> = {
   Iform: [9.42, 0, 0, 0, 0, 15.7],
 }
 
-function Axis({name, homed, value, limits, runGCode}: AxisProps) {
+const Axis = React.forwardRef(function Axis({name, homed, step, logscale, limits, marks, onUpdate}: AxisProps, ref) {
 
-  const limitsProps = limits? {min: limits[0], max: limits[1]} : {};
+  const [value, setValue, valueRef] = useState(0);
+  useImperativeHandle(ref,
+    () => ({
+      setValue: (newvalue: number) => {setValue(newvalue);},
+      getValue: () => {return valueRef.current;},
+      getLimit: () => {return limits;},
+    }));
+
+  const base = 1.02;
+  const logbase = Math.log(base);
 
   const handleClick = (event: React.SyntheticEvent | Event, value: number | number[]) => {
-    const cmd = 'G1 ' + name + value;
-    runGCode(cmd);
+    if (typeof value !== "number") {
+      console.log("wrong type of value, ", value);
+      return;
+    }
+    setValue(value);
+    const upd_value = logscale? Math.log(value) / logbase : value;
+    onUpdate(upd_value);
+  }
+
+  const limitsProps = limits == null ? {} : {
+    min: logscale? Math.pow(base, limits[0]) : limits[0],
+    max: logscale? Math.pow(base, limits[1]) : limits[1],
+  };
+
+  const scaleProps = logscale == null ? {} : {
+    scale: (value: number) => Math.log(value) / logbase,
   }
 
   return (
@@ -71,13 +123,170 @@ function Axis({name, homed, value, limits, runGCode}: AxisProps) {
       <Slider aria-label={name} valueLabelDisplay="on"
         disabled={!homed}
         value={value}
-        step={0.1}
-        marks
+        step={step || 0.1}
         onChangeCommitted={handleClick}
-        {...limitsProps} />
+        marks={marks} {...scaleProps} {...limitsProps} />
     </Stack>
   );
+});
+
+
+type KinematicsAxisProps = {
+  title: string,
+  value: number,
+  cardSx?: SxProps,
+  update: (diff: number) => () => void,
 }
+
+function KinematicsAxis({title, value, cardSx, update}: KinematicsAxisProps) {
+  return (
+    <Card sx={{...cardSx}}>
+      <CardContent>
+        <Typography gutterBottom> {title} [{value.toFixed(2)}] </Typography>
+        <IconButton aria-label="dec1" color="primary" onClick={update(0.1)}>
+          <KeyboardDoubleArrowLeftIcon /></IconButton>
+        <IconButton aria-label="dec2" color="secondary" onClick={update(0.01)}>
+          <KeyboardArrowLeftIcon /></IconButton>
+        <IconButton aria-label="inc2" color="secondary" onClick={update(-0.01)}>
+          <KeyboardArrowRightIcon /></IconButton>
+        <IconButton aria-label="inc1" color="primary" onClick={update(-0.1)}>
+          <KeyboardDoubleArrowRightIcon  /></IconButton>
+      </CardContent>
+    </Card>
+  )
+}
+
+type KinematicsPlanProps = {
+  axes: MutableRefObject<AxisHasValue | undefined>[],
+  homed: boolean,
+}
+
+type KinematicsPlan = number[][]
+
+function KinematicsPlanC({axes, homed}: KinematicsPlanProps) {
+
+  const [offset, setOffset] = useState([0, 0, 0]);
+  const [plan, setPlan] = useState<KinematicsPlan>([])
+  const [execDisabled, setExecDisabled] = useState(true);
+
+  const upd = (axis: number) => (diff: number) => () => {
+    const copy = [...offset];
+    copy[axis] += diff;
+    setOffset(copy);
+    updatePlan();
+  }
+  const reset = () => {setOffset([0, 0, 0]);}
+
+  const updatePlan = () => {
+    const positions = axes.map((axis) => axis.current!.getValue())
+    fetch(DynamicsURL+"/plan", {
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      method: 'POST',
+      body: JSON.stringify({
+        q: positions,
+        offset: offset,
+      }),
+    }).then((resp) => resp.json()).then((json) => {
+      setPlan(json.path);
+
+      setExecDisabled(true);
+
+      if (!homed) {
+        console.log("not homed.")
+        return;
+      }
+
+      if (!json.arrived) {
+        console.log("plan doesn't reach destination.")
+        return;
+      }
+
+      const check = (value: number, index: number) => {
+        const minmax = axes[index].current?.getLimit();
+        console.log("checking the limit", value, minmax);
+        return (minmax == null || value < minmax[0] ||  value > minmax[1]);
+      }
+
+      for (var step of json.path) {
+        if (step.map(check).some((x: boolean) => x)) {
+          return;
+        }
+      }
+
+      setExecDisabled(false);
+    })
+  }
+
+  const format = (step: number[]): string => {
+    return step.map((v) => `[${v.toFixed(2)}]`).join(", ");
+  }
+
+  const execute = () => {
+    const path = plan.map(positions => {return {positions: positions};});
+    fetch(DynamicsURL+"/execute", {
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      method: 'POST',
+      body: JSON.stringify({
+        path: path,
+      }),
+    }).then((resp) => resp.json()).then((json) => {
+      reset();
+    })
+  }
+
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', marginTop: "10px" }}>
+      <Stack spacing={3} direction={'column'} alignItems={'center'}>
+        <KinematicsAxis title={"X"} value={offset[0]} update={upd(0)} />
+        <KinematicsAxis title={"Y"} value={offset[1]} update={upd(1)} />
+        <KinematicsAxis title={"Z"} value={offset[2]} update={upd(2)} />
+        <Button variant="contained" onClick={reset}>Reset</Button>
+      </Stack>
+
+      <div>
+        <TableContainer sx={{width: "min-content", minWidth: 200}} component={Paper}>
+          <Table size="small" aria-label="plan">
+            <TableHead>
+              <TableRow>
+                <TableCell align="center">J1</TableCell>
+                <TableCell align="center">J2</TableCell>
+                <TableCell align="center">J3</TableCell>
+                <TableCell align="center">J4</TableCell>
+                <TableCell align="center">J5</TableCell>
+                <TableCell align="center">J5</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+            {plan.map((row, index) => (
+                <TableRow
+                  key={index}
+                  sx={{ '&:last-child td, &:last-child th': { border: 0 } }}
+                >
+                  <TableCell>{row[0].toFixed(2)}</TableCell>
+                  <TableCell>{row[1].toFixed(2)}</TableCell>
+                  <TableCell>{row[2].toFixed(2)}</TableCell>
+                  <TableCell>{row[3].toFixed(2)}</TableCell>
+                  <TableCell>{row[4].toFixed(2)}</TableCell>
+                  <TableCell>{row[5].toFixed(2)}</TableCell>
+                </TableRow>
+            ))}
+            </TableBody>
+          </Table>
+        </TableContainer>
+        <Button variant="contained" sx={{mt: 1}} disabled={execDisabled} onClick={execute}>
+          Execute
+        </Button>
+      </div>
+
+    </div>
+
+  )
+}
+
 
 type SavePathDialogProps = {
   open: boolean,
@@ -122,12 +331,12 @@ function SavePathDialog({open, onYes, onNo}: SavePathDialogProps) {
   )
 }
 
-type PathStepProps = {
+type PathStepTimestampProps = {
   timestamp: number,
   index: number,
 }
 
-function PathStep({timestamp, index}: PathStepProps) {
+function PathStepTimestamp({timestamp, index}: PathStepTimestampProps) {
   const datetime = new Date(timestamp * 1000);
   return (
       <ListItem>
@@ -145,7 +354,7 @@ function PathRecorder({ready}: PathRecorderProps) {
   const [openSavePath, setOpenSavePath] = useState(false);
   const [path, setPath] = useState<number[]>([]);
 
-  const generate = (element: React.ReactElement<any>) => {
+  const generateStepTimestamp = (element: React.ReactElement<any>) => {
     return path.map((value) =>
       React.cloneElement(element, {
         key: value,
@@ -187,7 +396,7 @@ function PathRecorder({ready}: PathRecorderProps) {
   }
 
   return (
-    <Box component="section" sx={{ m: "0px 20px", flexGrow: 1, maxWidth: 230, border: "dashed black 2px" }}>
+    <Box component="section" sx={{ flexGrow: 1, maxWidth: 230, border: "dashed black 2px" }}>
       <IconButton aria-label="add step" color="primary" onClick={handleAddStep} disabled={!ready}>
         <AddIcon />
       </IconButton>
@@ -198,7 +407,7 @@ function PathRecorder({ready}: PathRecorderProps) {
         <SaveIcon />
       </IconButton>
       <List dense={true}>
-        {generate(<PathStep timestamp={0} index={0} />)}
+        {generateStepTimestamp(<PathStepTimestamp timestamp={0} index={0} />)}
       </List>
       <SavePathDialog open={openSavePath} onYes={confirmSaveDialog} onNo={cancelSaveDialog}/>
     </Box>
@@ -210,18 +419,24 @@ export default function Streaming({imageQueue, setImageQueue, setMode}: SharedSt
   const [armStatus, setArmStatus, armStatusRef] = useState<string>('off');
   const [axisLimits, setAxisLimits, axisLimitsRef] = useState<AxisLimits | null>(null);
   const [homed, setHomed] = useState(false);
-  const [positions, setPositions] = useState([0, 0, 0, 0, 0, 0]);
+  // const [positions, setPositions] = useState([0, 0, 0, 0, 0, 0]);
+  const axisX = useRef<AxisHasValue>();
+  const axisY = useRef<AxisHasValue>();
+  const axisZ = useRef<AxisHasValue>();
+  const axisA = useRef<AxisHasValue>();
+  const axisB = useRef<AxisHasValue>();
+  const axisC = useRef<AxisHasValue>();
 
-  const runGCode = useRef<((gcode: string) => void) | null>(null);
+  const runGCode = useRef<(gcode: string) => void>();
 
   const [cameraState, setCameraState, cameraStateRef] = useState(false);
-  const toggleCamera = useRef<((() => void) | null)>(null);
-  const emergencyStop = useRef<((() => void) | null)>(null);
+  const toggleCamera = useRef<() => void>();
+  const updateGripper = useRef<(value: number) => void>();
+  const emergencyStop = useRef<() => void>();
 
   useEffect(() => {
 
     const cookie = `rh_auth="Basic YWRtaW46c2VjcmV0"; Version=1; Path=/; Domain=${Hostname}; SameSite=lax`;
-    console.log("cookie", cookie)
     document.cookie = cookie
 
     fetch(`http://${MongoURL}/camera?page=1&pagesize=8`, {
@@ -250,6 +465,9 @@ export default function Streaming({imageQueue, setImageQueue, setMode}: SharedSt
       toggleCamera.current = () => {
         setCameraState(!cameraStateRef.current);
         mqttClient.publish('/camera/command', cameraStateRef.current?'on':'off');
+      }
+      updateGripper.current = (value: number) => {
+        mqttClient.publish('/manipulator/command', value.toString());
       }
       mqttClient.subscribe('/camera/command', (err) => {
         if (err) {
@@ -328,7 +546,13 @@ export default function Streaming({imageQueue, setImageQueue, setMode}: SharedSt
           }
 
           const positions = rec.result.status.toolhead.position;
-          setPositions(positions.slice(0, 6));
+          //setPositions(positions.slice(0, 6));
+          axisX.current?.setValue(positions[0]);
+          axisY.current?.setValue(positions[1]);
+          axisZ.current?.setValue(positions[2]);
+          axisA.current?.setValue(positions[3]);
+          axisB.current?.setValue(positions[4]);
+          axisC.current?.setValue(positions[5]);
         }
       }
     };
@@ -339,12 +563,12 @@ export default function Streaming({imageQueue, setImageQueue, setMode}: SharedSt
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const handleChooseClick = () => {
-    if (cameraState) {
-      toggleCamera.current?.();
-    }
-    setMode?.(Mode.Pickup);
-  };
+  // const handleChooseClick = () => {
+  //   if (cameraState) {
+  //     toggleCamera.current?.();
+  //   }
+  //   setMode?.(Mode.Pickup);
+  // };
 
   const handleHome = () => {
     runGCode.current?.("SET_FAN_SPEED FAN=fan1 SPEED=1\nSET_FAN_SPEED FAN=fan2 SPEED=1\nG28");
@@ -369,16 +593,16 @@ export default function Streaming({imageQueue, setImageQueue, setMode}: SharedSt
     runGCode.current?.(cmd);
   }
 
-  const settings = {
-    dots: true,
-    centerMode: true,
-    centerPadding: '20px',
-    infinite: false,
-    speed: 500,
-    slidesToShow: 1,
-    rows: 1,
-    slidesPerRow: 8
-  };
+  // const settings = {
+  //   dots: true,
+  //   centerMode: true,
+  //   centerPadding: '20px',
+  //   infinite: false,
+  //   speed: 500,
+  //   slidesToShow: 1,
+  //   rows: 1,
+  //   slidesPerRow: 8
+  // };
 
   const statusColor: string =
     armStatus !== 'ready' ? 'red':
@@ -386,50 +610,61 @@ export default function Streaming({imageQueue, setImageQueue, setMode}: SharedSt
 
   return (
     <div>
-    <div style={{ display: 'flex', flexWrap: 'wrap' }}>
-      <div style={{ flexGrow: 2 }}>
-        <Card>
-          <CardContent>
-            <Axis name="X" homed={homed} value={positions[0]} limits={axisLimits?.x} runGCode={runGCode.current!} />
-            <Axis name="Y" homed={homed} value={positions[1]} limits={axisLimits?.y} runGCode={runGCode.current!} />
-            <Axis name="Z" homed={homed} value={positions[2]} limits={axisLimits?.z} runGCode={runGCode.current!} />
-            <Axis name="A" homed={homed} value={positions[3]} limits={axisLimits?.a} runGCode={runGCode.current!} />
-            <Axis name="B" homed={homed} value={positions[4]} limits={axisLimits?.b} runGCode={runGCode.current!} />
-            <Axis name="C" homed={homed} value={positions[5]} limits={axisLimits?.c} runGCode={runGCode.current!} />
-          </CardContent>
-          <CardActions sx={{flex: '1', flexDirection: 'row-reverse'}}>
-            <CircleIcon sx={{margin: '8px', color: statusColor}} />
-            <IconButton aria-label="camera" color="primary" onClick={handleCamera}>
-              <PhotoCameraIcon />
-            </IconButton>
-            <IconButton aria-label="stop" disabled={armStatus !== "ready"} color="error" onClick={handleStop}>
-              <WarningIcon />
-            </IconButton>
-            <IconButton aria-label="shutdown" disabled={armStatus !== "ready"} color="primary" onClick={handlePowerDown}>
-              <PowerSettingsNewIcon />
-            </IconButton>
-            <span style={{paddingLeft: 8}}>|</span>
-            <Button variant="outlined"
-              disabled={armStatus !== "ready"}
-              onClick={handlePreset('Lform')}>1</Button>
-            <Button variant="outlined"
-              disabled={armStatus !== "ready"}
-              onClick={handlePreset('init')}>0</Button>
-            <IconButton aria-label="home" disabled={armStatus !== "ready" || homed} color="success" onClick={handleHome}><HomeIcon /></IconButton>
-          </CardActions>
-        </Card>
-      </div>
-      <PathRecorder ready={armStatus === 'ready' && homed}/>
-      <div style={{ alignSelf: "center", width: "min-content" }}>
-      {
-        imageQueue.length === 0 ?
-          <div>Loading...</div> :
-        <div style={{  }}>
-          <img src={`data:image/jpg;base64,${imageQueue.slice(-1)[0].image}`} alt='from camera'/>
+      <div style={{ display: 'flex', flexWrap: 'wrap' }}>
+        <div style={{ flexGrow: 2 }}>
+          <Card>
+            <CardContent>
+              <Axis name="J1" homed={homed} limits={axisLimits?.x}
+                onUpdate={(value) => {runGCode.current!('G1 X' + value)}} ref={axisX} />
+              <Axis name="J2" homed={homed} limits={axisLimits?.y}
+                onUpdate={(value) => {runGCode.current!('G1 Y' + value)}} ref={axisY} />
+              <Axis name="J3" homed={homed} limits={axisLimits?.z}
+                onUpdate={(value) => {runGCode.current!('G1 Z' + value)}} ref={axisZ} />
+              <Axis name="J4" homed={homed} limits={axisLimits?.a}
+                onUpdate={(value) => {runGCode.current!('G1 A' + value)}} ref={axisA} />
+              <Axis name="J5" homed={homed} limits={axisLimits?.b}
+                onUpdate={(value) => {runGCode.current!('G1 B' + value)}} ref={axisB} />
+              <Axis name="J6" homed={homed} limits={axisLimits?.c}
+                onUpdate={(value) => {runGCode.current!('G1 C' + value)}} ref={axisC} />
+              <Axis name="M" homed={armStatus === 'ready'}
+                limits={[0, 45]} logscale={true} step={0.01}
+                marks={[{value: 1.22, label: '10'}, {value: 1.82, label: '30'}]}
+                onUpdate={updateGripper.current!} />
+            </CardContent>
+            <CardActions sx={{flex: '1', flexDirection: 'row-reverse'}}>
+              <CircleIcon sx={{margin: '8px', color: statusColor}} />
+              <IconButton aria-label="camera" color="primary" onClick={handleCamera}>
+                <PhotoCameraIcon />
+              </IconButton>
+              <IconButton aria-label="stop" disabled={armStatus !== "ready"} color="error" onClick={handleStop}>
+                <WarningIcon />
+              </IconButton>
+              <IconButton aria-label="shutdown" disabled={armStatus !== "ready"} color="primary" onClick={handlePowerDown}>
+                <PowerSettingsNewIcon />
+              </IconButton>
+              <span style={{paddingLeft: 8}}>|</span>
+              <Button variant="outlined"
+                disabled={armStatus !== "ready"}
+                onClick={handlePreset('Lform')}>1</Button>
+              <Button variant="outlined"
+                disabled={armStatus !== "ready"}
+                onClick={handlePreset('init')}>0</Button>
+              <IconButton aria-label="home" disabled={armStatus !== "ready" || homed} color="success" onClick={handleHome}><HomeIcon /></IconButton>
+            </CardActions>
+          </Card>
         </div>
-      }
+        <PathRecorder ready={armStatus === 'ready' && homed}/>
+        <div style={{ alignSelf: "center", width: "min-content", margin: "0px 20px" }}>
+        {
+          imageQueue.length === 0 ?
+            <div>Loading...</div> :
+          <div>
+            <img src={`data:image/jpg;base64,${imageQueue.slice(-1)[0].image}`} alt='from camera'/>
+          </div>
+        }
+        </div>
       </div>
-    </div>
+      <KinematicsPlanC axes={[axisX, axisY, axisZ, axisA, axisB, axisC]} homed={homed}/>
     </div>
   );
 

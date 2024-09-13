@@ -21,7 +21,9 @@ export interface SharedState {
 }
 
 export const Hostname = window.location.hostname
-export const CameraStreamingURL = 'http://raspberrypi.local';
+export const KlipperHost = '192.168.178.34';
+export const CameraStreamingURL = `http://${KlipperHost}`;
 export const MongoURL = `${Hostname}:8080`;
 export const MqttURL = `ws://${Hostname}:8883`;
-export const MoonrakerURL = 'ws://raspberrypi.local:7125/websocket'
+export const MoonrakerURL = `ws://${KlipperHost}:7125/websocket`
+export const DynamicsURL = `http://${Hostname}:8003`;
