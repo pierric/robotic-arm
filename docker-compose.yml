@@ -17,6 +17,9 @@ services:
   mongodb1:
     image: mongo:7.0
     command: [ "--bind_ip_all", "--replSet", "rs0" ]
+    env_file:
+      - path: $PWD/.env
+        required: true
     volumes:
       - $DATA_STORE:/data/db
     ports:
@@ -41,10 +44,25 @@ services:
     links:
       - restheart
       - mosquitto
+    env_file:
+      - path: $PWD/.env
+        required: true
     environment:
-      - RESTHEART_TOKEN
       - RESTHEART_ENDPOINT=http://restheart:8080
-      - CAM_STREAMING_URL=http://192.168.178.93
+      - CAM_STREAMING_URL=http://${GRIPPER_HOST}
       - MQTT_BROKER_URL=mosquitto
       - PYTHONUNBUFFERED=1
     command: /src/.venv/bin/dumper
+
+  dynamics:
+    build: ./arm_dynamics
+    ports:
+      - 8003:8000
+    env_file:
+      - path: $PWD/.env
+        required: true
+    environment:
+      - MQTT_BROKER_URL=mosquitto
+      - MOONRAKER_URL=ws://${KLIPPER_HOST}/websocket
+    command: poetry run -- fastapi run src/main.py
+
