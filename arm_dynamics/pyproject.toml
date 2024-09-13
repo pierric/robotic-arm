@@ -1,0 +1,23 @@
+[tool.poetry]
+name = "arm-dynamics"
+version = "0.1.0"
+description = ""
+authors = ["Jiasen Wu <jiasenwu@hotmail.com>"]
+license = "LGPLv3"
+readme = "README.md"
+packages = [{include = "*", from="src"}]
+include = ["urdf"]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+python-dotenv = "^1.0.1"
+roboticstoolbox-python = "^1.1.1"
+pydantic = "^2.9.1"
+fastapi = {version="^0.114.0", extras=["standard"]}
+numpy = "<2"
+aiomqtt = "^2.3.0"
+websockets = "^13.0.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

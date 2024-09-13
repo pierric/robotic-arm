@@ -1,0 +1,117 @@
+<?xml version="1.0"?>
+<robot>
+  <ros2_control name="GazeboSimSystem" type="system">
+    <hardware>
+      <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+    </hardware>
+    <joint name="J1">
+      <command_interface name="position">
+        <param name="min">${J1_min}</param>
+        <param name="max">${J1_max}</param>
+      </command_interface>
+      <state_interface name="position">
+        <param name="initial_value">0</param>
+      </state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="J2">
+      <command_interface name="position">
+        <param name="min">${J2_min}</param>
+        <param name="max">${J2_max}</param>
+      </command_interface>
+      <state_interface name="position">
+        <param name="initial_value">0</param>
+      </state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="J3">
+      <command_interface name="position">
+        <param name="min">${J3_min}</param>
+        <param name="max">${J3_min}</param>
+      </command_interface>
+      <state_interface name="position">
+        <param name="initial_value">0</param>
+      </state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="J4">
+      <command_interface name="position">
+        <param name="min">${J4_min}</param>
+        <param name="max">${J4_max}</param>
+      </command_interface>
+      <state_interface name="position">
+        <param name="initial_value">0</param>
+      </state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="J5">
+      <command_interface name="position">
+        <param name="min">${J5_min}</param>
+        <param name="max">${J5_max}</param>
+      </command_interface>
+      <state_interface name="position">
+        <param name="initial_value">0</param>
+      </state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="J6">
+      <command_interface name="position">
+        <param name="min">${J6_min}</param>
+        <param name="max">${J6_max}</param>
+      </command_interface>
+      <state_interface name="position">
+        <param name="initial_value">0</param>
+      </state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+
+    <transmission name="transmission1">
+      <plugin>transmission_interface/SimpleTransmission</plugin>
+      <actuator name="actuator1" role="actuator1"/>
+      <joint name="J1" role="J1">
+        <mechanical_reduction>6.4</mechanical_reduction>
+      </joint>
+    </transmission>
+  </ros2_control>
+
+  <gazebo>
+    <plugin
+      filename="gz-sim-joint-state-publisher-system"
+      name="gz::sim::systems::JointStatePublisher">
+      <joint_name>J1</joint_name>
+      <joint_name>J2</joint_name>
+      <joint_name>J3</joint_name>
+      <joint_name>J4</joint_name>
+      <joint_name>J5</joint_name>
+      <joint_name>J6</joint_name>
+    </plugin>
+
+    <plugin filename="libgz_ros2_control-system.so" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <robot_param>robot_description</robot_param>
+      <robot_param_node>robot_state_publisher</robot_param_node>
+      <parameters>$(find parol6)/config/controller.yaml</parameters>
+    </plugin>
+
+    <!-- Gazebo plugin can be used to control the joint directly.
+
+      <plugin
+        filename="gz-sim-joint-position-controller-system"
+        name="gz::sim::systems::JointPositionController">
+        <joint_name>J1</joint_name>
+        <topic>J6</topic>
+        <p_gain>10</p_gain>
+        <i_gain>1</i_gain>
+        <d_gain>0.1</d_gain>
+      </plugin>
+
+      However, it will overrides the control from ros2 side.
+     -->
+
+  </gazebo>
+</robot>
