@@ -51,6 +51,7 @@ async def process(session: aiohttp.ClientSession, streaming: aiohttp.ClientRespo
                 image = Image.open(io.BytesIO(full_chunk))
             except UnidentifiedImageError:
                 print("bad or incomplete data for an image")
+                full_chunk = b""
                 continue
 
             exif = image.getexif()
@@ -122,7 +123,10 @@ async def stream_receive():
                 continue
 
             print("Connected")
-            await process(session, res)
+            try:
+                await process(session, res)
+            except asyncio.TimeoutError:
+                continue
 
 
 def main():
