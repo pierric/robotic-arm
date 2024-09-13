@@ -31,6 +31,7 @@ async def query_moonraker(reader, writer, queue):
             "objects": {
                 "toolhead": ["homed_axes"],
                 "gcode_move": ["gcode_position"],
+                "motion_report": ["live_position", "live_velocity"],
             }
         }
     }, separators=(",", ":"))
@@ -41,14 +42,18 @@ async def query_moonraker(reader, writer, queue):
         resp = json.loads(resp[:-1])
         status = resp["result"]["status"]
         homed_axes = status["toolhead"]["homed_axes"]
-        positions = status["gcode_move"]["gcode_position"]
+        position = status["motion_report"]["live_position"]
+        velocity = status["motion_report"]["live_velocity"]
+        goal = status["gcode_move"]["gcode_position"]
 
         homed = homed_axes == "xyzabc"
         if homed:
             await queue.put({
                 "timestamp": time.time(),
                 "homed": homed,
-                "positions": positions
+                "position": position[:6],
+                "goal": goal[:6],
+                "velocity": velocity,
             })
 
         elasp = time.time() - last_timestamp
