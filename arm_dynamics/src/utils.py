@@ -37,7 +37,7 @@ async def execute(path):
             for s in path:
                 if pos := s.positions:
                     gcode = "G1 " + " ".join(
-                        [n+str(v) for n,v in zip("XYZABC", pos)]
+                        [f"{n}{v:.3f}" for n,v in zip("XYZABC", pos)]
                     )
                     await run_gcode(ws, gcode)
 

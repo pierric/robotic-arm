@@ -4,6 +4,9 @@ RUN apt update && apt install -y curl g++ && curl -sSL https://install.python-po
 ENV PATH=$PATH:/root/.local/bin
 
 WORKDIR /src
-ADD . /src
 
+ADD ./pyproject.toml ./poetry.lock /src
+RUN poetry install
+
+ADD . /src
 RUN poetry install

@@ -7,8 +7,8 @@
   <xacro:property name="J1_max" value="1.07" />
   <xacro:property name="J2_min" value="-1" />
   <xacro:property name="J2_max" value="1.5" />
-  <xacro:property name="J3_min" value="-2" />
-  <xacro:property name="J3_max" value="2" />
+  <xacro:property name="J3_min" value="-3" />
+  <xacro:property name="J3_max" value="2.1" />
   <xacro:property name="J4_min" value="-1" />
   <xacro:property name="J4_max" value="3.14" />
   <xacro:property name="J5_min" value="-2.17" />
@@ -165,7 +165,7 @@
     type="revolute">
     <origin
       xyz="0.0234207210610375 0 0.1105"
-      rpy="-1.5707963267949 0 0" />
+      rpy="-1.5707963267949 0.2 0" />
     <parent
       link="L1" />
     <child
@@ -223,7 +223,7 @@
     type="revolute">
     <origin
       xyz="0 -0.18 0"
-      rpy="3.1416 0 -1.5708" />
+      rpy="3.1416 0 -3.3416" />
     <parent
       link="L2" />
     <child

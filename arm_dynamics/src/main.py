@@ -17,6 +17,7 @@ origins = [
     "http://127.0.0.1:3000",
     "http://moon:3000",
     "http://moon.local:3000",
+    "*",
 ]
 
 app.add_middleware(
@@ -53,9 +54,9 @@ class ShiftResponse(BaseModel):
 PACKAGE_DIR = os.path.split(__file__)[0]
 # sign because of the direction is different between the real
 # hardware and the urdf (TODO fixup the urdf)
-REDUCTION_RATIOS = [-6, -20, 20, -4, -4, -10]
+REDUCTION_RATIOS = [-6, -20, 16.5, -4, -4.6, -10]
 # FIXUP on axis-Z because of the difference of point 0
-FIXUP = [0, 0, 0.785, 0, 0, 0]
+FIXUP = [0, 0, 0, 0, 0, 0]
 
 
 @app.post("/plan")
@@ -69,9 +70,12 @@ def read_item(shift: ShiftRequest):
     Tep = parol6.fkine(q) * sm.SE3.Trans(*shift.offset)
 
     while not arrived and len(path) < 10:
-        v, arrived = rtb.p_servo(parol6.fkine(q), Tep, 1)
+        v, arrived = rtb.p_servo(parol6.fkine(q), Tep, 1, threshold=0.2)
         qd = np.linalg.pinv(parol6.jacobe(q)) @ v
-        q = q + qd * 0.05
+        norm = np.linalg.norm(qd, 2)
+        if norm > 1:
+            qd /= norm
+        q = q + qd * 0.5
         path.append(q)
 
     def _revert(q):
