@@ -76,7 +76,7 @@ async def dump_images(begin, end, output_file):
             return timestamps
 
 
-async def dump_states(begin, end, output_file, path_file=None, extra=None):
+async def iter_collection(coll, begin, end):
     async with aiohttp.ClientSession() as session:
         params = {
             "filter": json.dumps(
@@ -92,46 +92,110 @@ async def dump_states(begin, end, output_file, path_file=None, extra=None):
         }
         page = 1
         index = 0
-        records = []
 
         while True:
             resp = await session.get(
-                f"{RESTHEART_ENDPOINT}/robot",
+                f"{RESTHEART_ENDPOINT}/{coll}",
                 params={"page": page, **params},
                 headers=RESTHEART_HEADERS,
                 raise_for_status=True,
             )
             resp = await resp.json()
             if not resp:
-                print("end..")
                 break
 
             for rec in resp:
-                records.append(
-                    {
-                        "timestamp": rec["timestamp"],
-                        "goal": rec["goal"],
-                        "position": rec["position"],
-                        "goal": rec["goal"],
-                        "velocity": rec["velocity"],
-                    }
-                )
+                yield rec
                 index += 1
 
             page += 1
 
-        with open(output_file, "w") as fp:
-            obj = {
-                "begin": begin,
-                "end": end,
-                "states": records,
-                **(extra or {}),
-            }
 
-            if path_file:
-                obj["path_file"] = path_file
+async def get_arm_states(begin, end):
+    records = []
+    async for rec in iter_collection("robot", begin, end):
+        records.append({
+            "timestamp": rec["timestamp"],
+            "goal": rec["goal"],
+            "position": rec["position"],
+            "goal": rec["goal"],
+            "velocity": rec["velocity"],
+        })
 
-            json.dump(obj, fp, indent=2)
+    return records
+
+
+async def get_gripper_states(begin, end):
+    records = []
+    async for rec in iter_collection("gripper", begin, end):
+        records.append({
+            "timestamp": rec["timestamp"],
+            "state": rec["state"],
+        })
+    return records
+
+
+def down_sample(records, timestamps):
+    if not timestamps:
+        return []
+
+    result = []
+    ri = 0
+
+    for ti in range(len(timestamps)):
+        target = timestamps[ti]
+
+        while ri < len(records) and records[ri]["timestamp"] < target:
+            ri += 1
+
+        # timestamp is beyond the last frame with known state
+        if ri == len(records):
+            result.extend([
+                {"timestamp": t, "state": records[-1]["state"]}
+                for t in timestamps[ti:]
+            ])
+            break
+
+        # timestamp is before the first frame with known state
+        if ri == 0:
+            result.append({"timestamp": target, "state": records[0]["state"]})
+            continue
+
+        # match exactly
+        if records[ri]["timestamp"] == target:
+            result.append({"timestamp": target, "state": records[ri]["state"]})
+            continue
+
+        t0 = records[ri-1]["timestamp"]
+        t1 = records[ri]["timestamp"]
+        s0 = records[ri-1]["state"]
+        s1 = records[ri]["state"]
+        if s0 == s1:
+            result.append({"timestamp": target, "state": s0})
+            continue
+
+        st = s0 + (s1 - s0) * (target - t0) / (t1 - t0)
+        result.append({"timestamp": target, "state": st})
+
+    for rec, nxt in zip(result, result[1:]):
+        rec["goal"] = nxt["state"]
+
+    result[-1]["goal"] = result[-1]["state"]
+
+    return result
+
+
+def merge(arm_records, gripper_records):
+    results = []
+    for ar, gr in zip(arm_records, gripper_records):
+        assert ar["timestamp"] == gr["timestamp"], f"{ar['timestamp']} vs {gr['timestamp']}"
+        rec = ar.copy()
+        rec["position"].append(gr["state"])
+        rec["goal"].append(gr["goal"])
+        results.append(rec)
+
+    return results
+
 
 
 def main():
@@ -148,16 +212,31 @@ def main():
         timestamps = await dump_images(
             args.begin, args.end+1, f"{args.output}/{name}.mp4"
         )
-        await dump_states(
-            args.begin,
-            args.end + 1,
-            f"{args.output}/{name}.json",
-            path_file=args.from_path,
-            extra={
-                "video_time_begin": min(timestamps),
-                "video_time_end": max(timestamps),
-            },
-        )
+
+        arm_records = await get_arm_states(args.begin, args.end + 1)
+        gripper_records = await get_gripper_states(args.begin, args.end + 1)
+        gripper_records = down_sample(gripper_records, [r["timestamp"] for r in arm_records])
+
+        assert len(arm_records) == len(gripper_records), f"{len(arm_records)} vs {len(gripper_records)}"
+
+        print(arm_records[:5])
+        print(gripper_records[:5])
+
+        obj = {
+            "begin": args.begin,
+            "end": args.end,
+            "video_time_begin": min(timestamps),
+            "video_time_end": max(timestamps),
+            "states": merge(arm_records, gripper_records),
+        }
+
+        if path_file := args.from_path:
+            obj["path_file"] = path_file
+
+        output_file = f"{args.output}/{name}.json"
+        with open(output_file, "w") as fp:
+            json.dump(obj, fp, indent=2)
+
 
     asyncio.run(_ep())
     print("output name:", name)
