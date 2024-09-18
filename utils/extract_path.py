@@ -130,15 +130,19 @@ def match(steps: List[float], key_points: List[Dict], keyname="timestamp", valna
 def main():
     parser = argparse.ArgumentParser(prog="extract a path")
     parser.add_argument("--name", required=True)
+    parser.add_argument("-o", "--output", default="paths")
     args = parser.parse_args()
 
     steps = query_path(args.name)
 
     gstates = query_and_match(steps, partial(query_mongo, "gripper"), valname="state")
-    rstates = query_and_match(steps, partial(query_mongo, "robot"), valname="positions")
+    rstates = query_and_match(steps, partial(query_mongo, "robot"), valname="position")
     res = [{"gripper": g, "positions": r} for g, r in zip(gstates, rstates)]
 
-    print(json.dumps(res))
+    with open(f"{args.output}/{args.name}.json", "w") as fp:
+        json.dump(res, fp)
+
+    print(f"Time frame: {steps[0]} {steps[-1]}")
 
 
 if __name__ == "__main__":
