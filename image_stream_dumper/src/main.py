@@ -4,6 +4,7 @@ import asyncio
 import base64
 from datetime import datetime
 import time
+import struct
 
 import aiomqtt
 import aiohttp
@@ -23,6 +24,59 @@ RESTHEART_HEADERS = {
 }
 
 camera_enabled = False
+TAG = b"CHDR"
+
+async def _process_chunk(session, chunk):
+
+    if (start := chunk.find(TAG)) < 0:
+        print("bad or incomplete chunk, no header found.")
+        return
+
+    chunk = chunk[start:]
+
+    fmt = "4sIqlf"
+    size = struct.calcsize(fmt)
+    magic, _, tv_sec, tv_usec, gripper_state = struct.unpack(fmt, chunk[:size])
+
+    if magic != TAG:
+        print("bad or incomplete chunk, header unmatched:", chunk[:size])
+        return
+
+    chunk = chunk[size:]
+
+    try:
+        image = Image.open(io.BytesIO(chunk))
+    except UnidentifiedImageError:
+        print("bad or incomplete chunk, image cannot be decoded")
+        return
+
+    enc = base64.b64encode(chunk)
+    timestamp = tv_sec + tv_usec * 1e-6
+
+    payload = {
+        "timestamp": timestamp,
+        "image": enc.decode(),
+    }
+    async with session.post(
+        f"{RESTHEART_ENDPOINT}/camera",
+        json=payload,
+        headers=RESTHEART_HEADERS) as res:
+
+        if res.status not in (200, 201):
+            print(f"failed to send image to restheart [{res.status_code}]")
+
+    payload = {
+        "timestamp": timestamp,
+        "state": float(gripper_state),
+    }
+    async with session.post(
+        f"{RESTHEART_ENDPOINT}/gripper",
+        json=payload,
+        headers=RESTHEART_HEADERS) as res:
+
+        if res.status not in (200, 201):
+            print(f"failed to send gripper state to restheart [{res.status_code}]")
+
 
 async def process(session: aiohttp.ClientSession, streaming: aiohttp.ClientResponse):
 
@@ -33,60 +87,14 @@ async def process(session: aiohttp.ClientSession, streaming: aiohttp.ClientRespo
             await session.close()
             break
 
+        # assuming that the boudnary is sent in a standalone chunk
         if chunk == _STREAM_BOUNDARY:
-            #print("boundary")
-            pass
-
-        elif chunk.startswith(b"Content-Type: image/jpeg"):
-            #print("start")
-            pass
+            if full_chunk:
+                await _process_chunk(session, full_chunk)
+                full_chunk = b''
 
         else:
             full_chunk += chunk
-
-            if not end:
-                continue
-
-            try:
-                image = Image.open(io.BytesIO(full_chunk))
-            except UnidentifiedImageError:
-                print("bad or incomplete data for an image")
-                full_chunk = b""
-                continue
-
-            exif = image.getexif()
-            idf = exif.get_ifd(ExifTags.IFD.Exif)
-            time = exif[0x132]
-            usec = idf[0x9290]
-            gripper_state = idf[0xA436]
-            timestamp = datetime.strptime(f"{time}.{usec}Z+0000", TIME_FMT).timestamp()
-            enc = base64.b64encode(full_chunk)
-
-            payload = {
-                "timestamp": timestamp,
-                "image": enc.decode(),
-            }
-            async with session.post(
-                f"{RESTHEART_ENDPOINT}/camera",
-                json=payload,
-                headers=RESTHEART_HEADERS) as res:
-
-                if res.status not in (200, 201):
-                    print(f"failed to send image to restheart [{res.status_code}]")
-
-            payload = {
-                "timestamp": timestamp,
-                "state": float(gripper_state),
-            }
-            async with session.post(
-                f"{RESTHEART_ENDPOINT}/gripper",
-                json=payload,
-                headers=RESTHEART_HEADERS) as res:
-
-                if res.status not in (200, 201):
-                    print(f"failed to send gripper state to restheart [{res.status_code}]")
-
-            full_chunk = b''
 
 
 async def mqtt_listen():

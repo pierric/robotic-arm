@@ -22,7 +22,6 @@
 static const char * TAG = "main";
 
 extern void onManipulatorCommand(void *message, size_t size, size_t offset, size_t total);
-extern void onCameraCommand(void *message, size_t size, size_t offset, size_t total);
 extern esp_err_t initWifi(void);
 extern bool wifiConnected(void);
 
@@ -51,7 +50,6 @@ void initMqtt()
 {
     mqtt.connect();
     mqtt.subscribe("/manipulator/command", onManipulatorCommand);
-    mqtt.subscribe("/camera/command", onCameraCommand);
     ESP_LOGI(TAG, "MQTT topic subscribed.");
 }
 

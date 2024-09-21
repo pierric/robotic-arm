@@ -1,11 +1,11 @@
 #include <memory>
+#include <ctime>
 #include <esp_err.h>
 #include <esp_log.h>
 #include <esp_http_server.h>
 #include <esp_timer.h>
 #include <esp_camera.h>
 
-#include "exif.h"
 #include "manipulator.h"
 
 #define PART_BOUNDARY "123456789000000000000987654321"
@@ -32,32 +32,20 @@ static httpd_handle_t stream_httpd = NULL;
 
 #define ESP_ERROR_CHECK_RETURN(x) ESP_ERROR_CHECK_OR(x, return err_rc_)
 
-static int _inject_exif(camera_fb_t *fb, const std::unique_ptr<char []> &buffer)
-{
-    const uint8_t *exif_buf;
-    size_t exif_len, data_offset;
-    get_exif_header(fb, getManipulatorState(), &exif_buf, &exif_len);
-    data_offset = get_jpeg_data_offset(fb);
-
-    size_t total_size = exif_len + fb->len - data_offset;
-
-    if (total_size > buffer_max_len) {
-        return -1;
-    }
-
-    char *ptr = buffer.get();
-    memcpy(ptr, exif_buf, exif_len);
-    memcpy(ptr + exif_len, fb->buf + data_offset, fb->len - data_offset);
-    return total_size;
-}
+struct __attribute__ ((packed)) ChunkHeader {
+    char header[4];
+    uint32_t size;
+    struct timeval timestamp;
+    float gripper_state;
+};
 
 static esp_err_t stream_handler(httpd_req_t *req)
 {
     char part_buf[64];
+    struct ChunkHeader header = {{'C', 'H', 'D', 'R'}};
     int64_t last_frame = esp_timer_get_time();
     int64_t fps_counter_last_timestamp = last_frame;
     int32_t fps_counter = 0;
-    auto buffer = std::make_unique<char[]>(buffer_max_len);
 
     ESP_ERROR_CHECK_RETURN(httpd_resp_set_type(req, _STREAM_CONTENT_TYPE));
     ESP_ERROR_CHECK_RETURN(httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*"));
@@ -77,10 +65,17 @@ static esp_err_t stream_handler(httpd_req_t *req)
         esp_err_t rc;
         size_t hlen = snprintf((char *)part_buf, 64, _STREAM_PART, fb->len);
 
-        int blen = _inject_exif(fb, buffer);
+        //int blen = _inject_exif(fb, buffer);
+        if (gettimeofday(&header.timestamp, nullptr) != 0) {
+            header.timestamp.tv_sec = time(nullptr);
+            header.timestamp.tv_usec = 0;
+        }
+        header.gripper_state = getManipulatorState();
+        header.size = sizeof(struct ChunkHeader) + fb->len;
 
         ESP_ERROR_CHECK_OR(rc = httpd_resp_send_chunk(req, (const char *)part_buf, hlen), goto ERR);
-        ESP_ERROR_CHECK_OR(rc = httpd_resp_send_chunk(req, (const char *)buffer.get(), blen), goto ERR);
+        ESP_ERROR_CHECK_OR(rc = httpd_resp_send_chunk(req, (const char *)&header, sizeof(header)), goto ERR);
+        ESP_ERROR_CHECK_OR(rc = httpd_resp_send_chunk(req, (const char *)fb->buf, fb->len), goto ERR);
         ESP_ERROR_CHECK_OR(rc = httpd_resp_send_chunk(req, _STREAM_BOUNDARY, strlen(_STREAM_BOUNDARY)), goto ERR);
         ERR:
 
