@@ -23,7 +23,7 @@ from safetensors.torch import save_file
 
 FEATURES = Features(
     {
-        "observation.image": VideoFrame(),
+        "observation.images.top": VideoFrame(),
         "observation.state": Sequence(
             length=7, feature=Value(dtype="float32", id=None)
         ),
@@ -58,7 +58,7 @@ def load_datadict(ep_idx: int, jsonfile: Path, videofile: Path):
 
     # videofile should be copied to a relative path videos/
     return {
-        "observation.image": [
+        "observation.images.top": [
             {"path": f"videos/{videofile.name}", "timestamp": t} for t in timestamps
         ],
         "observation.state": obs,
