@@ -20,6 +20,8 @@ from lerobot.common.datasets.utils import flatten_dict
 import torch
 from safetensors.torch import save_file
 
+from common import interpolate
+
 
 FEATURES = Features(
     {
@@ -35,6 +37,7 @@ FEATURES = Features(
     }
 )
 
+FPS = 10
 
 def load_datadict(ep_idx: int, jsonfile: Path, videofile: Path):
     with open(jsonfile, "r") as fp:
@@ -42,30 +45,43 @@ def load_datadict(ep_idx: int, jsonfile: Path, videofile: Path):
 
     begin = obj["video_time_begin"]
     end = obj["video_time_end"]
-    states = [s for s in obj["states"] if begin <= s["timestamp"] <= end]
 
-    timestamps = [s["timestamp"] - begin for s in states]
-    actions = [s["goal"] for s in states]
-    obs = [s["position"] for s in states]
+    # timestamps of each frame
+    timestamps = [begin + fi / FPS for fi in range(int((end - begin - 0.1) * FPS))]
+
+    key_state_begin = obj["states"][0]["timestamp"]
+    key_state_end = obj["states"][-1]["timestamp"]
+    timestamps = [t for t in timestamps if key_state_begin <= t <= key_state_end]
+    timestamps_in_video = [t - begin for t in timestamps]
+
+    try:
+        rem, obs = interpolate(timestamps, obj["states"], valname="position")
+    except AssertionError:
+        print("Failed to interpolate: ", jsonfile)
+        raise
+    assert len(rem) == 0, "video frames goes beyond the timeframe of recorded states"
+
+    actions = obs[1:] + [obs[-1]]
 
     num_frames = len(timestamps)
     assert num_frames == len(actions)
     assert num_frames == len(obs)
 
     # LeRobotDataset video variation will load frames during the __getitem__
-    #images = decode_video_frames_torchvision(videofile, timestamps, 0.1)
-    #images = [img.numpy().transpose(1, 2, 0) for img in (images * 255).to(torch.uint8)]
+    # no need to extract the image here
+    # images = decode_video_frames_torchvision(videofile, timestamps, 0.1)
+    # images = [img.numpy().transpose(1, 2, 0) for img in (images * 255).to(torch.uint8)]
 
     # videofile should be copied to a relative path videos/
     return {
         "observation.images.top": [
-            {"path": f"videos/{videofile.name}", "timestamp": t} for t in timestamps
+            {"path": f"videos/{videofile.name}", "timestamp": t} for t in timestamps_in_video
         ],
         "observation.state": obs,
         "action": actions,
         "episode_index": [ep_idx] * num_frames,
         "frame_index": list(range(0, num_frames)),
-        "timestamp": timestamps,
+        "timestamp": timestamps_in_video,
     }
 
 
@@ -90,7 +106,7 @@ def to_lerobot_dataset(files, repo_id, root):
     episode_data_index = calculate_episode_data_index(hf_dataset)
     info = {
         "video": 1,
-        "fps": 10,
+        "fps": FPS,
         "encoding": {
             "vcodec": "libsvtav1",
             "pix_fmt": "yuv420p",
@@ -163,6 +179,12 @@ def main():
 
     stats = compute_stats(lds, batch_size=32, num_workers=8)
     save_meta_data(lds.info, stats, lds.episode_data_index, local_dir / "meta_data")
+
+
+def debug():
+    file = "CYzVZ8DN5sLFsuSqUsikNg"
+    output_dir = Path("output")
+    load_datadict(0, output_dir / f"{file}.json", output_dir / f"{file}.mp4")
 
 
 if __name__ == "__main__":

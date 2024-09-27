@@ -8,6 +8,7 @@ from diffusers.optimization import get_scheduler
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.common.policies.act.configuration_act import ACTConfig
 from lerobot.common.policies.act.modeling_act import ACTPolicy
+from torch._dynamo.utils import istensor
 
 
 run = neptune.init_run(project="jiasen/lerobot")
@@ -17,9 +18,9 @@ output_directory = Path(f"outputs/train/parol6_pickup/{run._sys_id}")
 output_directory.mkdir(parents=True, exist_ok=True)
 
 device = torch.device("cuda")
-log_freq = 5
+log_freq = 50
 
-training_steps = 7000
+training_steps = 6000
 lr = 1.0e-4
 lr_scheduler = "cosine"
 lr_warmup_steps = 500
@@ -31,14 +32,22 @@ grad_clip_norm = 10
 chunk_size = 50
 n_action_steps = 50
 
+
+#dataset_repo_id = "lerobot/parol6_pickup"
+#FPS = 4
+
+dataset_repo_id = "lerobot/parol6_pickup_interpolated"
+FPS = 4
+
 # to build up the batch["action"], must be num of chunk_size
-# the key frames are in 0.25s interval
+# the key frames are in 1/FPS interval
 delta_timestamps = {
-    "action": [i * 0.25 for i in range(chunk_size)],
+    "action": [i / FPS for i in range(chunk_size)],
 }
 
 
 run["parameteres"] = {
+    "dataset_repo_id": dataset_repo_id,
     "training_steps": training_steps,
     "delta_timestamps": json.dumps(delta_timestamps),
     "batch_size": batch_size,
@@ -55,7 +64,7 @@ run["parameteres"] = {
 
 
 dataset = LeRobotDataset(
-    "lerobot/parol6_pickup", delta_timestamps=delta_timestamps, root="datasets"
+    dataset_repo_id, delta_timestamps=delta_timestamps, root="datasets"
 )
 
 dataset.stats["observation.images.top"]["mean"] = torch.tensor(
@@ -142,7 +151,10 @@ while not done:
         optimizer.zero_grad()
         lr_scheduler.step()
 
-        run["training/loss"].append(loss.item())
+        for k, v in output_dict.items():
+            if torch.is_tensor(v):
+                v = v.item()
+            run[f"training/{k}"].append(v)
         run["training/lr"].append(optimizer.param_groups[0]["lr"])
         run["training/grad_norm "].append(float(grad_norm))
 
