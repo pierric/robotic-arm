@@ -54,7 +54,7 @@ class ShiftResponse(BaseModel):
 PACKAGE_DIR = os.path.split(__file__)[0]
 # sign because of the direction is different between the real
 # hardware and the urdf (TODO fixup the urdf)
-REDUCTION_RATIOS = [-6, -20, 16.5, -4, -4.6, -10]
+REDUCTION_RATIOS = [-6, -20, 20, -4, -4, -10]
 # FIXUP on axis-Z because of the difference of point 0
 FIXUP = [0, 0, 0, 0, 0, 0]
 

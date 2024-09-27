@@ -6,4 +6,4 @@ build/
 browser/public/
 browser/test.js
 browser/test2.mjs
-
+sandbox

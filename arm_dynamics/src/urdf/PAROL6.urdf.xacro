@@ -107,7 +107,7 @@
     type="revolute">
     <origin
       xyz="0 0 0"
-      rpy="0 0 0" />
+      rpy="0 0 -0.436" />
     <parent
       link="base_link" />
     <child
@@ -165,7 +165,7 @@
     type="revolute">
     <origin
       xyz="0.0234207210610375 0 0.1105"
-      rpy="-1.5707963267949 0.2 0" />
+      rpy="-1.5707963267949 0.0873 0" />
     <parent
       link="L1" />
     <child
@@ -223,7 +223,7 @@
     type="revolute">
     <origin
       xyz="0 -0.18 0"
-      rpy="3.1416 0 -3.3416" />
+      rpy="3.1416 0 -2.8984" />
     <parent
       link="L2" />
     <child
@@ -339,7 +339,7 @@
     type="revolute">
     <origin
       xyz="0 0 0.17635"
-      rpy="1.5708 0 0" />
+      rpy="1.5708 0 0.045" />
     <parent
       link="L4" />
     <child
@@ -410,6 +410,6 @@
       effort="0.16"
       velocity="1.57" />
   </joint>
-
+  
   <xacro:include filename="$(find parol6)/urdf/gazebo.xacro" />
 </robot>
