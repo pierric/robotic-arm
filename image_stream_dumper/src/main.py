@@ -101,17 +101,22 @@ async def mqtt_listen():
 
     global camera_enabled
 
-    async with aiomqtt.Client(MQTT_BROKER_URL) as client:
-        await client.subscribe("/camera/command")
-        print("mqtt subscribed.")
-        async for message in client.messages:
-            cmd = message.payload.decode().lower()
-            print("mqtt message:", cmd)
+    while True:
+        try:
+            async with aiomqtt.Client(MQTT_BROKER_URL) as client:
+                await client.subscribe("/camera/command")
+                print("mqtt subscribed.")
+                async for message in client.messages:
+                    cmd = message.payload.decode().lower()
+                    print("mqtt message:", cmd)
 
-            if cmd not in ["on", "off"]:
-                print("Warning: unknown camera command", cmd)
+                    if cmd not in ["on", "off"]:
+                        print("Warning: unknown camera command", cmd)
 
-            camera_enabled = cmd == "on"
+                    camera_enabled = cmd == "on"
+
+        except aiomqtt.exceptions.MqttCodeError:
+            pass
 
 
 async def stream_receive():
