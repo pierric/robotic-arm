@@ -52,6 +52,12 @@ static esp_err_t stream_handler(httpd_req_t *req)
     ESP_ERROR_CHECK_RETURN(httpd_resp_send_chunk(req, _STREAM_BOUNDARY, strlen(_STREAM_BOUNDARY)));
 
     while (true) {
+        if (gettimeofday(&header.timestamp, nullptr) != 0) {
+            header.timestamp.tv_sec = time(nullptr);
+            header.timestamp.tv_usec = 0;
+        }
+        header.gripper_state = getManipulatorState();
+
         camera_fb_t *fb = esp_camera_fb_get();
         if (!fb) {
             ESP_LOGE(TAG, "Failed to grab frame buffer.");
@@ -65,14 +71,8 @@ static esp_err_t stream_handler(httpd_req_t *req)
         esp_err_t rc;
         size_t hlen = snprintf((char *)part_buf, 64, _STREAM_PART, fb->len);
 
-        //int blen = _inject_exif(fb, buffer);
-        if (gettimeofday(&header.timestamp, nullptr) != 0) {
-            header.timestamp.tv_sec = time(nullptr);
-            header.timestamp.tv_usec = 0;
-        }
-        header.gripper_state = getManipulatorState();
         header.size = sizeof(struct ChunkHeader) + fb->len;
-
+        
         ESP_ERROR_CHECK_OR(rc = httpd_resp_send_chunk(req, (const char *)part_buf, hlen), goto ERR);
         ESP_ERROR_CHECK_OR(rc = httpd_resp_send_chunk(req, (const char *)&header, sizeof(header)), goto ERR);
         ESP_ERROR_CHECK_OR(rc = httpd_resp_send_chunk(req, (const char *)fb->buf, fb->len), goto ERR);

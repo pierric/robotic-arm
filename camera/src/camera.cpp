@@ -53,7 +53,7 @@ void initCamera()
     config.frame_size = FRAMESIZE_VGA;
     config.jpeg_quality = 12;
     config.fb_location = CAMERA_FB_IN_PSRAM;
-    config.fb_count = 8;
+    config.fb_count = 4;
     config.grab_mode = CAMERA_GRAB_LATEST;
 
 #if defined(CAMERA_MODEL_ESP_EYE)
