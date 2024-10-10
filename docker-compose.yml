@@ -43,13 +43,13 @@ services:
     build: ./image_stream_dumper
     links:
       - restheart
-      - mosquitto
     env_file:
       - path: $PWD/.env
         required: true
     environment:
       - RESTHEART_ENDPOINT=http://restheart:8080
       - CAM_STREAMING_URL=http://${GRIPPER_HOST}
+      - MOONRAKER_URL=http://${KLIPPER_HOST}:7125
       - MQTT_BROKER_URL=mosquitto
       - PYTHONUNBUFFERED=1
     command: /src/.venv/bin/dumper
