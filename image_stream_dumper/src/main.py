@@ -1,14 +1,13 @@
 import os
 import io
+import json
 import asyncio
 import base64
-from datetime import datetime
-import time
-import struct
+from datetime import datetime, timezone
 
-import aiomqtt
 import aiohttp
-from PIL import Image, ExifTags, UnidentifiedImageError
+import aiomqtt
+from PIL import Image, UnidentifiedImageError
 
 PART_BOUNDARY = b"123456789000000000000987654321"
 _STREAM_BOUNDARY = (b"\r\n--" + PART_BOUNDARY + b"\r\n")
@@ -16,6 +15,7 @@ TIME_FMT = "%Y:%m:%d %H:%M:%S.%fZ%z"
 
 CAM_STREAMING_URL = os.environ["CAM_STREAMING_URL"]
 RESTHEART_ENDPOINT = os.environ["RESTHEART_ENDPOINT"]
+MOONRAKER_URL = os.environ["MOONRAKER_URL"]
 MQTT_BROKER_URL = os.environ["MQTT_BROKER_URL"]
 
 RESTHEART_HEADERS = {
@@ -23,35 +23,38 @@ RESTHEART_HEADERS = {
     "Authorization": "Basic " + os.environ["RESTHEART_TOKEN"]
 }
 
-camera_enabled = False
-TAG = b"CHDR"
+TagTiffDateTime = 0x132
+TagTiffExifIFD = 0x8769
+TagExifSubSecTime = 0x9290
+
+stopFlag = False
+recordFlag = True
 
 async def _process_chunk(session, chunk):
 
-    if (start := chunk.find(TAG)) < 0:
-        print("bad or incomplete chunk, no header found.")
-        return
-
-    chunk = chunk[start:]
-
-    fmt = "4sIqlf"
-    size = struct.calcsize(fmt)
-    magic, _, tv_sec, tv_usec, gripper_state = struct.unpack(fmt, chunk[:size])
-
-    if magic != TAG:
-        print("bad or incomplete chunk, header unmatched:", chunk[:size])
-        return
-
-    chunk = chunk[size:]
-
     try:
+        cs = chunk.split(b"\r\n", 3)
+        if len(cs) != 4 or (
+            not cs[0].startswith(b"Content-Type:") or
+            not cs[1].startswith(b"Content-Length:") or
+            cs[2] != b""
+        ):
+            print("Abnormal chunk", chunk[:40])
+        chunk = cs[3]
         image = Image.open(io.BytesIO(chunk))
+        exif = image.getexif()
+        now = exif.get(TagTiffDateTime)
+        millisec = exif.get_ifd(TagTiffExifIFD).get(TagExifSubSecTime)
     except UnidentifiedImageError:
         print("bad or incomplete chunk, image cannot be decoded")
         return
 
     enc = base64.b64encode(chunk)
-    timestamp = tv_sec + tv_usec * 1e-6
+
+    timestamp = datetime.fromisoformat(now).replace(
+        tzinfo=timezone.utc,
+        microsecond=int(millisec) * 1000
+    ).timestamp()
 
     payload = {
         "timestamp": timestamp,
@@ -63,19 +66,7 @@ async def _process_chunk(session, chunk):
         headers=RESTHEART_HEADERS) as res:
 
         if res.status not in (200, 201):
-            print(f"failed to send image to restheart [{res.status_code}]")
-
-    payload = {
-        "timestamp": timestamp,
-        "state": float(gripper_state),
-    }
-    async with session.post(
-        f"{RESTHEART_ENDPOINT}/gripper",
-        json=payload,
-        headers=RESTHEART_HEADERS) as res:
-
-        if res.status not in (200, 201):
-            print(f"failed to send gripper state to restheart [{res.status_code}]")
+            print(f"failed to send image to restheart [{res.status}]")
 
 
 async def process(session: aiohttp.ClientSession, streaming: aiohttp.ClientResponse):
@@ -83,69 +74,80 @@ async def process(session: aiohttp.ClientSession, streaming: aiohttp.ClientRespo
     full_chunk = b""
 
     async for chunk, end in streaming.content.iter_chunks():
-        if not camera_enabled:
-            await session.close()
-            break
 
-        # assuming that the boudnary is sent in a standalone chunk
-        if chunk == _STREAM_BOUNDARY:
-            if full_chunk:
-                await _process_chunk(session, full_chunk)
-                full_chunk = b''
+        if stopFlag or not recordFlag:
+            print("Recording stopped.")
+            return
 
-        else:
+        # assuming that the boudnary is never received in pieces
+        if (bpos := chunk.find(_STREAM_BOUNDARY)) < 0:
             full_chunk += chunk
+        else:
+            full_chunk += chunk[:bpos]
+            if full_chunk != b"":
+                await _process_chunk(session, full_chunk)
+            full_chunk = chunk[bpos + len(_STREAM_BOUNDARY):]
 
 
-async def mqtt_listen():
-
-    global camera_enabled
-
+async def stream_receive(session):
     while True:
+        if stopFlag or not recordFlag:
+            await asyncio.sleep(0.5)
+            continue
+
+        print("Connecting to camera..")
+
         try:
-            async with aiomqtt.Client(MQTT_BROKER_URL) as client:
-                await client.subscribe("/camera/command")
-                print("mqtt subscribed.")
-                async for message in client.messages:
-                    cmd = message.payload.decode().lower()
-                    print("mqtt message:", cmd)
-
-                    if cmd not in ["on", "off"]:
-                        print("Warning: unknown camera command", cmd)
-
-                    camera_enabled = cmd == "on"
-
-        except aiomqtt.exceptions.MqttCodeError:
-            pass
-
-
-async def stream_receive():
-    while True:
-        if not camera_enabled:
+            res = await session.get(CAM_STREAMING_URL)
+        except aiohttp.ClientConnectionError:
+            print("Camera is not online, waiting..")
             await asyncio.sleep(1)
             continue
 
-        async with aiohttp.ClientSession() as session:
-            print("Connecting to camera..")
+        print("Connected")
+        try:
+            await process(session, res)
+        except asyncio.TimeoutError:
+            continue
 
-            try:
-                res = await session.get(CAM_STREAMING_URL)
-            except aiohttp.ClientConnectionError:
-                print("Error: camera not online, waiting..")
-                await asyncio.sleep(5)
-                continue
 
-            print("Connected")
-            try:
-                await process(session, res)
-            except asyncio.TimeoutError:
-                continue
+async def check_camera_status(session):
+    global stopFlag
+    while True:
+        resp = await session.get(
+            MOONRAKER_URL + "/printer/objects/query?output_pin camera_en",
+        )
+        if resp.status != 200:
+            await asyncio.sleep(0.5)
+            continue
+
+        status = await resp.json()
+        stopFlag = status["result"]["status"]["output_pin camera_en"]["value"] != 1
+        await asyncio.sleep(0.5)
+
+
+async def check_mqtt_command():
+    global recordFlag 
+    async with aiomqtt.Client(MQTT_BROKER_URL) as client:
+        await client.subscribe("/camera/record")
+        print("mqtt subscribed.")
+        async for message in client.messages:
+            cmd = message.payload.decode().lower()
+            print("mqtt message:", cmd)
+            if cmd not in ["on", "off"]:
+                print("Warning: unknown camera command", cmd)
+
+            recordFlag = cmd == "on"
 
 
 def main():
     async def _ep():
-        await asyncio.gather(mqtt_listen(), stream_receive())
-
+        async with aiohttp.ClientSession() as session:
+            await asyncio.gather(
+                check_camera_status(session),
+                check_mqtt_command(),
+                stream_receive(session),
+            )
     asyncio.run(_ep())
 
 
