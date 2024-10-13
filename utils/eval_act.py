@@ -14,6 +14,7 @@ import torchvision
 neptune_id = os.environ["NEPTUNE_ID"]
 
 pretrained_policy_path = Path(f"outputs/train/parol6_pickup/{neptune_id}")
+print("Using snapshot:", pretrained_policy_path)
 policy = ACTPolicy.from_pretrained(pretrained_policy_path)
 policy.eval()
 policy.to("cuda")
