@@ -7,6 +7,8 @@ from functools import partial
 import requests
 from dotenv import load_dotenv
 
+from common import interpolate, last_value, klipper
+
 load_dotenv()
 
 RESTHEART_ENDPOINT = os.environ["RESTHEART_ENDPOINT"]
@@ -47,7 +49,7 @@ def query_mongo(collection, begin, end):
     return resp.json()
 
 
-def query_and_match(steps, query_func, *, keyname="timestamp", valname):
+def query_and_match(steps, query_func, *, keyname="timestamp", get_value):
 
     prfx = []
     ret = []
@@ -56,15 +58,15 @@ def query_and_match(steps, query_func, *, keyname="timestamp", valname):
         records = query_func(steps[0], steps[-1])
         if not records:
             # probably should be an error instead
-            print("no more records found")
+            print("no records found", query_func)
             break
 
         # records may contains partial results, matching only the head of steps
-        steps, matched = match(
+        steps, matched = interpolate(
             steps,
-            [project(r, [keyname, valname]) for r in prfx + records],
+            prfx + records, #[project(r, [keyname, valname]) for r in prfx + records],
             keyname=keyname,
-            valname=valname,
+            interpolate_func=get_value,
         )
 
         ret.extend(matched)
@@ -135,12 +137,20 @@ def main():
 
     steps = query_path(args.name)
 
-    gstates = query_and_match(steps, partial(query_mongo, "gripper"), valname="state")
-    rstates = query_and_match(steps, partial(query_mongo, "robot"), valname="position")
+    gstates = query_and_match(
+        steps,
+        partial(query_mongo, "gripper"),
+        get_value=partial(last_value, valname="state")
+    )
+    rstates = query_and_match(
+        steps,
+        partial(query_mongo, "robot"),
+        get_value=partial(klipper)
+    )
     res = [{"gripper": g, "positions": r} for g, r in zip(gstates, rstates)]
 
     with open(f"{args.output}/{args.name}.json", "w") as fp:
-        json.dump(res, fp)
+        json.dump(res, fp, indent=2)
 
     print(f"Time frame: {steps[0]} {steps[-1]}")
 

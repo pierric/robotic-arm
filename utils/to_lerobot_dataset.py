@@ -46,26 +46,24 @@ def load_datadict(ep_idx: int, jsonfile: Path, videofile: Path):
     begin = obj["video_time_begin"]
     end = obj["video_time_end"]
 
-    # timestamps of each frame
-    timestamps = [begin + fi / FPS for fi in range(int((end - begin - 0.1) * FPS))]
-
-    key_state_begin = obj["states"][0]["timestamp"]
-    key_state_end = obj["states"][-1]["timestamp"]
-    timestamps = [t for t in timestamps if key_state_begin <= t <= key_state_end]
-    timestamps_in_video = [t - begin for t in timestamps]
-
-    try:
-        rem, obs = interpolate(timestamps, obj["states"], valname="position")
-    except AssertionError:
-        print("Failed to interpolate: ", jsonfile)
-        raise
-    assert len(rem) == 0, "video frames goes beyond the timeframe of recorded states"
-
+    # a part of the key_states are the state of the video frames
+    # choose them and calculate them the frame index in the video
+    # the action is the next key_state
+    key_states = [o for o in obj["states"] if begin <= o["timestamp"] <= end]
+    obs = [o["position"] for o in key_states]
+    timestamps = [o["timestamp"] for o in key_states]
+    timestamps_in_video = [t / FPS for t in range(len(key_states))]
     actions = obs[1:] + [obs[-1]]
 
     num_frames = len(timestamps)
+    actual_fps = num_frames / (timestamps[-1] - timestamps[0])
+    if abs(FPS - actual_fps) >= 1:
+        print(
+            f"{videofile} actual fps: {actual_fps} "
+            f"#frames: {num_frames} t0: {timestamps[0]} t1: {timestamps[-1]}"
+        )
     assert num_frames == len(actions)
-    assert num_frames == len(obs)
+    assert num_frames == len(key_states)
 
     # LeRobotDataset video variation will load frames during the __getitem__
     # no need to extract the image here

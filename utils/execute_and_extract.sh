@@ -10,5 +10,6 @@ PATHNAME=$1
 
 TIMESPAN=$(python execute_path.py paths/$PATHNAME.json | tail -n 1 | cut -d : -f 2)
 echo $TIMESPAN
+sleep 2
 python extract_dataset.py --from-path paths/$PATHNAME.json $TIMESPAN
 

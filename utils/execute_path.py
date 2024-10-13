@@ -43,36 +43,54 @@ async def run_gcode(ws, gcode):
             break
 
 
-async def execute(path, args, start_record_at=1):
+async def execute(path, args, start_record_at=1, position_key="positions", gripper_state_key: str | None ="gripper"):
     async with aiomqtt.Client(MQTT_SERVER_HOST, port=MQTT_SERVER_PORT) as mqtt:
         async with ws_connect(MOONRAKER_URL) as ws:
 
-            if isinstance(args.move_to, int):
+            if hasattr(args, "move_to") and isinstance(args.move_to, int):
                 s = path[args.move_to]
-                pos = s["positions"]
+                pos = s[position_key]
                 gcode = "G1 " + " ".join([f"{n}{v:.3f}" for n,v in zip("XYZABC", pos)])
                 await run_gcode(ws, gcode)
-                gr = s["gripper"]
-                await mqtt.publish("/manipulator/command", gr)
+
+                gr = None
+                if gripper_state_key:
+                    gr = s[gripper_state_key]
+                elif len(s[position_key]) == 7:
+                    gr = s[position_key][-1]
+
+                if gr:
+                    await mqtt.publish("/manipulator/command", gr)
                 return
 
             begin = time.time()
+
+            if args.end_at is not None:
+                path = path[:args.end_at]
 
             for i, s in enumerate(path):
                 if i == start_record_at:
                     begin = time.time()
                     await mqtt.publish("/camera/command", "on")
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(1)
 
                 print(s)
-                pos = s["positions"]
+                pos = s[position_key]
                 gcode = "G1 " + " ".join([f"{n}{v:.3f}" for n,v in zip("XYZABC", pos)])
                 await run_gcode(ws, gcode)
                 print(gcode)
-                gr = s["gripper"]
-                await mqtt.publish("/manipulator/command", gr)
-                print(gr)
-                await asyncio.sleep(0.5)
+
+                gr = None
+                if gripper_state_key:
+                    gr = s[gripper_state_key]
+                elif len(s[position_key]) == 7:
+                    gr = s[position_key][-1]
+
+                if gr:
+                    await mqtt.publish("/manipulator/command", gr)
+                    print(gr)
+
+                await asyncio.sleep(1)
             await mqtt.publish("/camera/command", "off")
 
             end = time.time()
@@ -84,17 +102,28 @@ def main():
     parser.add_argument("pathfile")
     parser.add_argument("-o", "--output", default="output")
     parser.add_argument("-m", "--move-to", type=int)
+    parser.add_argument("-e", "--end-at", type=int)
+    parser.add_argument("--from-dataset", action="store_true")
     args = parser.parse_args()
 
     with open(args.pathfile, "r") as fp:
         path = json.load(fp)
+
+
+    position_key = "positions"
+    gripper_state_key = "gripper"
+
+    if args.from_dataset:
+        path = path["states"]
+        position_key = "position"
+        gripper_state_key = None
 
     if isinstance(path, dict):
         # single step
         path = [path]
 
     assert isinstance(path, list)
-    asyncio.run(execute(path, args))
+    asyncio.run(execute(path, args, position_key=position_key, gripper_state_key=gripper_state_key))
 
 
 if __name__ == "__main__":
