@@ -13,7 +13,7 @@ RESTHEART_TOKEN = os.environ["RESTHEART_TOKEN"]
 
 
 last_timestamp = 0
-FPS = 1
+FPS = 5
 perframe = 1 / FPS
 fps = 0
 fps_counter_last_timestamp = 0
@@ -69,7 +69,7 @@ async def query_moonraker(reader, writer, queue):
                 "velocity": velocity,
             }
             if gripper:
-                payload["gripper"] = gripper_state_to_angle(gripper),
+                payload["gripper"] = gripper_state_to_angle(gripper)
             await queue.put(payload)
 
         elasp = time.time() - last_timestamp
