@@ -1,196 +1,198 @@
-import React, { useEffect, useState, useRef } from 'react';
-import Slider from 'react-slick';
+import React, { useEffect, useRef } from 'react';
+import useState from 'react-usestateref';
+import Table from '@mui/material/Table';
+import TableBody from '@mui/material/TableBody';
+import TableCell from '@mui/material/TableCell';
+import TableContainer from '@mui/material/TableContainer';
+import TableHead from '@mui/material/TableHead';
+import TableRow from '@mui/material/TableRow';
+import Paper from '@mui/material/Paper';
 import Button from '@mui/material/Button';
-import ArrowBackIcon from '@mui/icons-material/ArrowBack';
-import AdjustIcon from '@mui/icons-material/Adjust';
-import { Image, Circle, Stage, Layer } from 'react-konva';
-import Konva from 'konva';
-import useImage from 'use-image';
-import pako from 'pako';
-import { Buffer } from "buffer";
-import 'slick-carousel/slick/slick.css';
-import 'slick-carousel/slick/slick-theme.css';
+import Stack from '@mui/material/Stack';
+import Checkbox from '@mui/material/Checkbox';
+import RestartAltIcon from '@mui/icons-material/RestartAlt';
+import { meros } from 'meros/browser';
+import { Backend, CameraStreamingURL, MongoURL, DynamicsURL, PredictURL } from './Common';
 
-import { SharedState, Mode, EncodedImage, EncodedMask } from './Common';
 
-interface ImageWithOverlayProps {
-  image: string,
-  overlay: string | null,
-  points: [number, number][],
-  onClick: (evt: Konva.KonvaEventObject<MouseEvent>) => void,
+function bytesToBase64(bytes: Uint8Array) {
+  const binString = Array.from(bytes, (byte) =>
+    String.fromCodePoint(byte),
+  ).join("");
+  return btoa(binString);
 }
 
-const ImageWithOverlay = ({image, overlay, points, onClick}: ImageWithOverlayProps) => {
-  const [im] = useImage(`data:image/jpg;base64,${image}`);
-  //const [ov] = useImage(`data:image/png;base64,${overlay}`);
-  const width = im?.width ?? 640;
-  const height = im?.height ?? 480;
+function sleep(ms: number) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
 
-  // the type is the raw Konva Image
-  const imageRef = useRef<Konva.Image>(null);
+export default function Pickup(props: {backend: React.RefObject<Backend>}) {
 
-  useEffect(() => {
-    if (im) {
-      imageRef.current?.cache({
-        pixelRatio: 1,
-      });
-    }
-  }, [im]);
+  const [img, setImg, imgRef] = useState<string>("");
+  const [gripperState, setGripperState, gripperStateRef] = useState<number>(0);
+  const [armState, setArmState, armStateRef] = useState<number[]>([0,0,0,0,0,0]);
+  const [prediction, setPrediction, predictionRef] = useState<number[] | null>();
+  const [, setStopFlag, stopFlagRef] = useState(false);
+  const refResetFlag = useRef<HTMLInputElement>(null);
 
-  const applyMask = (imageData: ImageData) => {
-    if (overlay) {
-      const msk_bytes = Buffer.from(overlay, 'base64');
-      const msk = JSON.parse(pako.inflate(msk_bytes, {to: "string"}));
-      // msk is array of size width * height
-      if (msk.length !== width * height) {
-        console.log("WARNING: mask shape mismatch: %d != (%d, %d)", msk.length, width, height);
-      }
+  function predict() {
+    const reset = refResetFlag.current?.checked || false;
+    const payload = {
+      image: imgRef.current,
+      state: armStateRef.current.concat([gripperStateRef.current]),
+      reset: reset,
+    };
 
-      else if (imageData.data.length !== width * height * 4) {
-        console.log("WARNING: image shape mismatch: %d != (%d, %d)", imageData.data.length, width, height);
-      }
-
-      else {
-        for (var i = 0; i < imageData.data.length; i += 4) {
-          const midx = Math.trunc(i / 4)
-          const fg = msk[midx] / 255 * 0.6;
-          const bg = 1 - fg;
-          imageData.data[i] = Math.trunc(imageData.data[i] * bg);
-          imageData.data[i+1] = Math.trunc(imageData.data[i+1] * bg + 255 * fg);
-          imageData.data[i+2] = Math.trunc(imageData.data[i+2] * bg);
+    return sleep(500).then(() =>
+      fetch(
+        PredictURL,
+        {
+          headers: {'Content-Type': 'application/json'},
+          method: 'POST',
+          body: JSON.stringify(payload),
         }
-      }
-    }
-  };
-
-  return (
-    <Stage width={width} height={height}>
-      <Layer>
-        <Image ref={imageRef} onClick={onClick} image={im}
-          filters={[applyMask]}
-        />
-      </Layer>
-      <Layer>
-      {
-        points.map(([x, y], idx) => (
-          <Circle key={idx} x={x} y={y} radius={10} fill='red' stroke={'black'}/>
-        ))
-      }
-      </Layer>
-    </Stage>
-  );
-};
-
-
-export default function Pickup({mode, setMode, imageQueue}: SharedState) {
-
-  const [depthMasks, setDepthMasks] = useState<EncodedImage[]>([]);
-  const [segMasks, setSegMasks] = useState<EncodedMask|null>(null);
-  const [points, setPoints] = useState<[number, number][]>([]);
-
-  const handleBackClick = () => {
-    setMode?.(Mode.View);
-  };
-
-  const handleCenterClick = () => {
-
-  };
-
-  const addPoint = (evt: Konva.KonvaEventObject<MouseEvent>) => {
-    console.log("click add point")
-    setPoints(points.concat([[evt.evt.offsetX, evt.evt.offsetY]]))
-  };
-
-  useEffect(() => {
-    const depthAnythingEndpoint = 'http://localhost:8000/depth';
-    Promise.all(
-      imageQueue.map((item) =>
-        fetch(
-          depthAnythingEndpoint,
-          {
-            headers: {'Content-Type': 'application/json'},
-            method: 'POST',
-            body: JSON.stringify({image: item.image}),
-          }
-        ).then((resp) => resp.json()).then((json) => json.image as EncodedMask)
       )
-    ).then((masks) => setDepthMasks(masks));
-  }, [imageQueue])
-
-  useEffect(() => {
-    if (points.length === 0) {
-      return;
-    }
-    const samEndpoint = 'http://localhost:8000/mask';
-    const img = imageQueue.slice(-1)[0].image;
-    const payload = JSON.stringify({points: points, image: img, encoding: ".gz"});
-    fetch(
-      samEndpoint,
-      {
-        headers: {'Content-Type': 'application/json'},
-        method: 'POST',
-        body: payload,
-      }
-    ).then((resp) => resp.json()).then((json) => setSegMasks(json.image as EncodedImage))
-  }, [points, imageQueue])
-
-  const settings = {
-    dots: true,
-    centerMode: true,
-    centerPadding: '20px',
-    infinite: false,
-    speed: 500,
-    slidesToShow: 1,
-    rows: 1,
-    slidesPerRow: 8
-  };
-
-  const buttonStyle = {
-    marginLeft: 10,
-    marginRight: 10,
+    ).then((resp) => resp.json()).then((json) => {
+      setPrediction(json);
+      if (refResetFlag.current)
+        refResetFlag.current.checked = false;
+    });
   }
 
+  function doit() {
+    if (predictionRef.current == null) {
+      console.log("no prediction yet. Nothing executed.")
+      return;
+    }
+
+    const path = [{
+      positions: predictionRef.current.slice(0, 6),
+      gripper: predictionRef.current[6],
+    }];
+    console.log("executing: ", path);
+    return fetch(DynamicsURL+"/execute", {
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      method: 'POST',
+      body: JSON.stringify({
+        path: path,
+      }),
+    }).then((resp) => resp.json()).then((json) => predict());
+  }
+
+  const autoPickup = async () => {
+    setStopFlag(false);
+    var first = true;
+    while (!stopFlagRef.current) {
+      refResetFlag.current!.checked = first;
+      await predict();
+      await doit();
+      first = false;
+    }
+  }
+
+  const stop = () => {
+    setStopFlag(true);
+  }
+
+  useEffect(() => {
+    try {
+      props.backend.current?.toggleCamera(true, false);
+    }
+    catch(e) {
+      console.log(e);
+    }
+
+    console.log("Setting up a websocket for arm states.");
+    const wsMongo = new WebSocket(`ws://${MongoURL}/robot/_streams/all`);
+    wsMongo.onerror = console.error;
+    wsMongo.onmessage = (data) => {
+      if (data instanceof MessageEvent) {
+        const rec = JSON.parse(data.data)
+        setArmState(rec.fullDocument.position);
+        setGripperState(rec.fullDocument.gripper);
+      }
+    };
+
+    const controller = new AbortController();
+    const retrive = async () => {
+
+      const parts = await fetch(CameraStreamingURL, { signal: controller.signal }).then(
+        (res) => meros<string>(res)
+      );
+
+      console.log("Connected to the camera")
+
+      if (parts instanceof Response) {
+        console.log("No streaming from the endpoint");
+        console.log(parts);
+        return;
+      }
+      for await (const part of parts) {
+        const b64 = bytesToBase64(part.body);
+        setImg(b64);
+      }
+    }
+
+    retrive().catch(console.error);
+    // a hook to terminate the connection once left the view.
+    return () => {controller.abort();}
+  }, [props.backend, setArmState, setGripperState, setImg])
+
   return (
-    <div>
-      <div style={{display: 'inline-block'}}>
-        <ImageWithOverlay
-          image={imageQueue.slice(-1)[0].image}
-          overlay={segMasks}
-          points={points}
-          onClick={addPoint}
-        />
-      </div>
-      <div>
-        <Slider {...settings}>
-        {
-          imageQueue.map((cimg, idx: number) => {
-            const img = `data:image/png;base64,${cimg.image}`;
-            const msk = `data:image/png;base64,${depthMasks[idx]}`;
-            return (
-              <div key={idx}>
-                <img src={img} alt='from camera' width={200}/>
-                <img src={msk} alt='mask' width={200}/>
-                <span>{cimg.timestamp}</span>
-              </div>
-            );
-          })
-        }
-        </Slider>
+    <div style={{margin: "5px 5px", display: 'flex', flexWrap: 'wrap'}}>
+      {img !== ""? <img width="640" height="480" alt="from the camera" src={`data:image/jpg;base64,${img}`} />: <div /> }
 
-        <div style={{ marginTop: '40px' }}>
-        <Button variant="outlined" startIcon={<ArrowBackIcon />}
-          style={buttonStyle}
-          onClick={handleBackClick}>
-          Back
-        </Button>
+      <TableContainer sx={{width: "min-content", minWidth: 200, ml: 1}} component={Paper}>
+        <Table size="small" aria-label="plan">
+          <TableHead>
+            <TableRow>
+              <TableCell align="center">J1</TableCell>
+              <TableCell align="center">J2</TableCell>
+              <TableCell align="center">J3</TableCell>
+              <TableCell align="center">J4</TableCell>
+              <TableCell align="center">J5</TableCell>
+              <TableCell align="center">J6</TableCell>
+              <TableCell align="center">Gripper</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            <TableRow sx={{ '&:last-child td, &:last-child th': { border: 0 } }} >
+              <TableCell>{armState[0].toFixed(2)}</TableCell>
+              <TableCell>{armState[1].toFixed(2)}</TableCell>
+              <TableCell>{armState[2].toFixed(2)}</TableCell>
+              <TableCell>{armState[3].toFixed(2)}</TableCell>
+              <TableCell>{armState[4].toFixed(2)}</TableCell>
+              <TableCell>{armState[5].toFixed(2)}</TableCell>
+              <TableCell>{gripperState.toFixed(2)}</TableCell>
+            </TableRow>
+            {
+              prediction &&
+              <TableRow sx={{ '&:last-child td, &:last-child th': { border: 0 } }} >
+                <TableCell>{prediction[0].toFixed(2)}</TableCell>
+                <TableCell>{prediction[1].toFixed(2)}</TableCell>
+                <TableCell>{prediction[2].toFixed(2)}</TableCell>
+                <TableCell>{prediction[3].toFixed(2)}</TableCell>
+                <TableCell>{prediction[4].toFixed(2)}</TableCell>
+                <TableCell>{prediction[5].toFixed(2)}</TableCell>
+                <TableCell>{prediction[6].toFixed(2)}</TableCell>
+              </TableRow>
+            }
+          </TableBody>
+        </Table>
+      </TableContainer>
 
-        <Button variant="contained" startIcon={<AdjustIcon />}
-          style={buttonStyle}
-          onClick={handleCenterClick}>
-          Center
-        </Button>
-        </div>
-      </div>
+      <Stack spacing={1} direction={'column'} alignItems='stretch' sx={{ml: 1}} width="min-content">
+        <Stack direction={'row'} alignItems='center' spacing={1}>
+          <Checkbox id="resetFlag" icon={<RestartAltIcon color="disabled"/>} checkedIcon={<RestartAltIcon/>} inputRef={refResetFlag} />
+          <Button variant="contained" onClick={predict} >Predict</Button>
+          <Button variant="contained" onClick={doit} disabled={!prediction}>Go</Button>
+        </Stack>
+
+        <Button variant="contained" onClick={autoPickup} > Pickup automatically </Button>
+        <Button variant="contained" onClick={stop} > Stop! </Button>
+      </Stack>
     </div>
   );
 

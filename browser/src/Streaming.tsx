@@ -45,17 +45,18 @@ import 'slick-carousel/slick/slick.css';
 import 'slick-carousel/slick/slick-theme.css';
 
 import {
-  SharedState, CapturedImage, MongoURL,
+  Backend, CapturedImage, MongoURL,
   MqttURL, MoonrakerURL, Hostname, DynamicsURL,
+  gripperStateToAngle,
 } from './Common'
 
-interface AxisLimits {
-  x: [number, number],
-  y: [number, number],
-  z: [number, number],
-  a: [number, number],
-  b: [number, number],
-  c: [number, number],
+export type AxisLimits = {
+    x: [number, number],
+    y: [number, number],
+    z: [number, number],
+    a: [number, number],
+    b: [number, number],
+    c: [number, number],
 }
 
 interface AxisHasValue {
@@ -80,23 +81,25 @@ type AxisProps = {
 }
 
 const PresetPostures: Record<string, number[]> = {
-  init: [9.42, 20, -42, 0, 0, 15.7],
-  Lform: [9.42, 0, -16, -0.4, 6, 15.7],
+  init: [9.42, 20, -52, 0, 3, 15.7],
+  Lform: [9.42, 0, -24.8, 0, 6.3, 15.7],
   Iform: [9.42, 0, 0, 0, 0, 15.7],
 }
 
 const Axis = React.forwardRef(function Axis({name, homed, step, logscale, limits, marks, onUpdate}: AxisProps, ref) {
 
+  const base = 1.02;
+  const logbase = Math.log(base);
   const [value, setValue, valueRef] = useState(0);
   useImperativeHandle(ref,
     () => ({
-      setValue: (newvalue: number) => {setValue(newvalue);},
+      setValue: (newvalue: number) => {
+        const scaled = logscale? Math.pow(base, newvalue): newvalue;
+        setValue(scaled);
+      },
       getValue: () => {return valueRef.current;},
       getLimit: () => {return limits;},
     }));
-
-  const base = 1.02;
-  const logbase = Math.log(base);
 
   const handleClick = (event: React.SyntheticEvent | Event, value: number | number[]) => {
     if (typeof value !== "number") {
@@ -173,11 +176,11 @@ function KinematicsPlanC({axes, homed}: KinematicsPlanProps) {
     const copy = [...offset];
     copy[axis] += diff;
     setOffset(copy);
-    updatePlan();
+    updatePlan(copy);
   }
-  const reset = () => {setOffset([0, 0, 0]);}
+  const reset = () => {setOffset([0, 0, 0]); setPlan([]);}
 
-  const updatePlan = () => {
+  const updatePlan = (offset: number[]) => {
     const positions = axes.map((axis) => axis.current!.getValue())
     fetch(DynamicsURL+"/plan", {
       headers: {
@@ -257,7 +260,7 @@ function KinematicsPlanC({axes, homed}: KinematicsPlanProps) {
                 <TableCell align="center">J3</TableCell>
                 <TableCell align="center">J4</TableCell>
                 <TableCell align="center">J5</TableCell>
-                <TableCell align="center">J5</TableCell>
+                <TableCell align="center">J6</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -414,25 +417,26 @@ function PathRecorder({ready}: PathRecorderProps) {
   )
 }
 
-export default function Streaming({imageQueue, setImageQueue, setMode}: SharedState) {
+export default function Streaming(props: {
+  ready: boolean,
+  homed: boolean,
+  backend: React.RefObject<Backend>
+}) {
 
-  const [armStatus, setArmStatus, armStatusRef] = useState<string>('off');
-  const [axisLimits, setAxisLimits, axisLimitsRef] = useState<AxisLimits | null>(null);
-  const [homed, setHomed] = useState(false);
-  // const [positions, setPositions] = useState([0, 0, 0, 0, 0, 0]);
+  const {ready, homed, backend} = props;
+
+  const [imageQueue, setImageQueue] = useState<CapturedImage[]>([]);
+  const [axisLimits, setAxisLimits] = useState<AxisLimits>();
+
   const axisX = useRef<AxisHasValue>();
   const axisY = useRef<AxisHasValue>();
   const axisZ = useRef<AxisHasValue>();
   const axisA = useRef<AxisHasValue>();
   const axisB = useRef<AxisHasValue>();
   const axisC = useRef<AxisHasValue>();
-
-  const runGCode = useRef<(gcode: string) => void>();
+  const axisM = useRef<AxisHasValue>();
 
   const [cameraState, setCameraState, cameraStateRef] = useState(false);
-  const toggleCamera = useRef<() => void>();
-  const updateGripper = useRef<(value: number) => void>();
-  const emergencyStop = useRef<() => void>();
 
   useEffect(() => {
 
@@ -458,83 +462,41 @@ export default function Streaming({imageQueue, setImageQueue, setMode}: SharedSt
       }
     };
 
-    const mqttClient = mqtt.connect(MqttURL)
-    mqttClient.on('connect', () => {
-      // mqttClient.publish('/camera/command', 'off');
-
-      toggleCamera.current = () => {
-        setCameraState(!cameraStateRef.current);
-        mqttClient.publish('/camera/command', cameraStateRef.current?'on':'off');
-      }
-      updateGripper.current = (value: number) => {
-        mqttClient.publish('/manipulator/command', value.toString());
-      }
-      mqttClient.subscribe('/camera/command', (err) => {
-        if (err) {
-          console.log(err);
-        }
-      });
-    });
-
-    mqttClient.on('message', (topic, message) => {
-      console.log(topic.toString(), message.toString());
-    });
-
-    const wsMoonraker = new WebSocket(MoonrakerURL);
     const intervalRoutine = setInterval(() => {
-      if (wsMoonraker.readyState === WebSocket.OPEN) {
-        wsMoonraker.send(JSON.stringify({
-          jsonrpc: '2.0',
-          method: 'server.info',
-          id: 100,
-        }));
-
-        if (armStatusRef.current === 'ready') {
-          wsMoonraker.send(JSON.stringify({
-            jsonrpc: '2.0',
-            method: 'printer.objects.query',
-            params: {
-              objects: {
-                gcode_move: null,
-                toolhead: ['homed_axes', 'axis_minimum', 'axis_maximum', 'position']
-              }
-            },
-            id: 101
-          }));
-
-          runGCode.current = (gcode) => {
-            wsMoonraker.send(JSON.stringify({
-              jsonrpc: '2.0',
-              method: 'printer.gcode.script',
-              params: {
-                script: gcode
-              },
-              id: 200
-            }));
+      backend.current?.sendMoonrakerMessage(JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'printer.objects.query',
+        params: {
+          objects: {
+            toolhead: ['axis_minimum', 'axis_maximum'],
+            gcode_move: null,
+            motion_report: ['live_position'],
+            'servo gripper': null,
           }
-
-          emergencyStop.current = () => {
-            wsMoonraker.send(JSON.stringify({
-              "jsonrpc": "2.0",
-              "method": "printer.emergency_stop",
-              "id": 999
-            }));
-          }
-        }
-      }
+        },
+        id: 401
+      }));
     }, 2000);
-    wsMoonraker.onmessage = (data) => {
-      if (data instanceof MessageEvent) {
-        const rec = JSON.parse(data.data)
-        if (rec.id === 100) {
-          setArmStatus(rec.result.klippy_state);
-        }
-        else if (rec.id === 101) {
-          setHomed(rec.result.status.toolhead.homed_axes === 'xyzabc');
 
-          if (axisLimitsRef.current === null) {
-            const mins = rec.result.status.toolhead.axis_minimum;
-            const maxs = rec.result.status.toolhead.axis_maximum;
+    backend.current?.setMoonrakerMessageHandler(
+      401,
+      (rec: any) => {
+          const positions = rec.result.status.motion_report.live_position;
+          //setPositions(positions.slice(0, 6));
+          axisX.current?.setValue(positions[0]);
+          axisY.current?.setValue(positions[1]);
+          axisZ.current?.setValue(positions[2]);
+          axisA.current?.setValue(positions[3]);
+          axisB.current?.setValue(positions[4]);
+          axisC.current?.setValue(positions[5]);
+          const gripper = rec.result.status["servo gripper"].value;
+
+          const angle = gripperStateToAngle(gripper)
+          axisM.current?.setValue(angle);
+
+          if (!axisLimits) {
+            let mins = rec.result.status.toolhead.axis_minimum;
+            let maxs = rec.result.status.toolhead.axis_maximum;
             setAxisLimits({
               x: [mins[0], maxs[0]],
               y: [mins[1], maxs[1]],
@@ -544,53 +506,39 @@ export default function Streaming({imageQueue, setImageQueue, setMode}: SharedSt
               c: [mins[5], maxs[5]],
             });
           }
-
-          const positions = rec.result.status.toolhead.position;
-          //setPositions(positions.slice(0, 6));
-          axisX.current?.setValue(positions[0]);
-          axisY.current?.setValue(positions[1]);
-          axisZ.current?.setValue(positions[2]);
-          axisA.current?.setValue(positions[3]);
-          axisB.current?.setValue(positions[4]);
-          axisC.current?.setValue(positions[5]);
-        }
       }
-    };
+    );
 
     return () => {
+      backend.current?.delMoonrakerMessageHandler(401);
       clearInterval(intervalRoutine);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // const handleChooseClick = () => {
-  //   if (cameraState) {
-  //     toggleCamera.current?.();
-  //   }
-  //   setMode?.(Mode.Pickup);
-  // };
-
   const handleHome = () => {
-    runGCode.current?.("SET_FAN_SPEED FAN=fan1 SPEED=1\nSET_FAN_SPEED FAN=fan2 SPEED=1\nG28");
+    backend.current?.runGCode("SET_FAN_SPEED FAN=fan1 SPEED=1\nSET_FAN_SPEED FAN=fan2 SPEED=1\nG28");
   }
 
   const handleCamera = () => {
-    toggleCamera.current?.();
+    backend.current?.toggleCamera(!cameraState, !cameraState);
+    setCameraState(!cameraState);
   }
 
   const handlePowerDown = () => {
-    runGCode.current?.("M18");
+    backend.current?.runGCode("M18\nSET_FAN_SPEED FAN=fan1 SPEED=0\nSET_FAN_SPEED FAN=fan2 SPEED=0");
+    backend.current?.toggleCamera(false, false);
   }
 
   const handleStop = () => {
-    emergencyStop.current?.();
+    backend.current?.emergencyStop();
   }
 
   const handlePreset = (idx: string) => () => {
     const pos = PresetPostures[idx];
     const names = 'XYZABC';
     const cmd = 'G1 ' + pos.map((val, idx) => names[idx] + val).join(' ');
-    runGCode.current?.(cmd);
+    backend.current?.runGCode(cmd);
   }
 
   // const settings = {
@@ -604,10 +552,6 @@ export default function Streaming({imageQueue, setImageQueue, setMode}: SharedSt
   //   slidesPerRow: 8
   // };
 
-  const statusColor: string =
-    armStatus !== 'ready' ? 'red':
-    homed ? 'green': 'orange';
-
   return (
     <div>
       <div style={{ display: 'flex', flexWrap: 'wrap' }}>
@@ -615,45 +559,48 @@ export default function Streaming({imageQueue, setImageQueue, setMode}: SharedSt
           <Card>
             <CardContent>
               <Axis name="J1" homed={homed} limits={axisLimits?.x}
-                onUpdate={(value) => {runGCode.current!('G1 X' + value)}} ref={axisX} />
+                onUpdate={(value) => {backend.current?.runGCode('G1 X' + value)}} ref={axisX} />
               <Axis name="J2" homed={homed} limits={axisLimits?.y}
-                onUpdate={(value) => {runGCode.current!('G1 Y' + value)}} ref={axisY} />
+                onUpdate={(value) => {backend.current?.runGCode('G1 Y' + value)}} ref={axisY} />
               <Axis name="J3" homed={homed} limits={axisLimits?.z}
-                onUpdate={(value) => {runGCode.current!('G1 Z' + value)}} ref={axisZ} />
+                onUpdate={(value) => {backend.current?.runGCode('G1 Z' + value)}} ref={axisZ} />
               <Axis name="J4" homed={homed} limits={axisLimits?.a}
-                onUpdate={(value) => {runGCode.current!('G1 A' + value)}} ref={axisA} />
+                onUpdate={(value) => {backend.current?.runGCode('G1 A' + value)}} ref={axisA} />
               <Axis name="J5" homed={homed} limits={axisLimits?.b}
-                onUpdate={(value) => {runGCode.current!('G1 B' + value)}} ref={axisB} />
+                onUpdate={(value) => {backend.current?.runGCode('G1 B' + value)}} ref={axisB} />
               <Axis name="J6" homed={homed} limits={axisLimits?.c}
-                onUpdate={(value) => {runGCode.current!('G1 C' + value)}} ref={axisC} />
-              <Axis name="M" homed={armStatus === 'ready'}
-                limits={[0, 45]} logscale={true} step={0.01}
+                onUpdate={(value) => {backend.current?.runGCode('G1 C' + value)}} ref={axisC} />
+              <Axis name="M" homed={ready}
+                limits={[0, 90]} logscale={true} step={0.01}
                 marks={[{value: 1.22, label: '10'}, {value: 1.82, label: '30'}]}
-                onUpdate={updateGripper.current!} />
+                onUpdate={(value) => {backend.current?.runGCode('SET_SERVO SERVO=gripper angle=' + value)}}
+                ref={axisM} />
             </CardContent>
             <CardActions sx={{flex: '1', flexDirection: 'row-reverse'}}>
-              <CircleIcon sx={{margin: '8px', color: statusColor}} />
+              <CircleIcon sx={{margin: '8px', color: !ready ? 'red': homed ? 'green': 'orange'}} />
               <IconButton aria-label="camera" color="primary" onClick={handleCamera}>
                 <PhotoCameraIcon />
               </IconButton>
-              <IconButton aria-label="stop" disabled={armStatus !== "ready"} color="error" onClick={handleStop}>
+              <IconButton aria-label="stop" disabled={!ready} color="error" onClick={handleStop}>
                 <WarningIcon />
               </IconButton>
-              <IconButton aria-label="shutdown" disabled={armStatus !== "ready"} color="primary" onClick={handlePowerDown}>
+              <IconButton aria-label="shutdown" disabled={!ready} color="primary" onClick={handlePowerDown}>
                 <PowerSettingsNewIcon />
               </IconButton>
               <span style={{paddingLeft: 8}}>|</span>
               <Button variant="outlined"
-                disabled={armStatus !== "ready"}
+                disabled={!ready}
                 onClick={handlePreset('Lform')}>1</Button>
               <Button variant="outlined"
-                disabled={armStatus !== "ready"}
+                disabled={!ready}
                 onClick={handlePreset('init')}>0</Button>
-              <IconButton aria-label="home" disabled={armStatus !== "ready" || homed} color="success" onClick={handleHome}><HomeIcon /></IconButton>
+              <IconButton aria-label="home"
+                disabled={!ready || homed}
+                color="success" onClick={handleHome}><HomeIcon /></IconButton>
             </CardActions>
           </Card>
         </div>
-        <PathRecorder ready={armStatus === 'ready' && homed}/>
+        <PathRecorder ready={ready && homed}/>
         <div style={{ alignSelf: "center", width: "min-content", margin: "0px 20px" }}>
         {
           imageQueue.length === 0 ?
