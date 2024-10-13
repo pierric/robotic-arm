@@ -128,13 +128,15 @@ static const char* _STREAM_BOUNDARY     = "\r\n--" PART_BOUNDARY "\r\n";
 static const char* _STREAM_PART         = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
 
 const int INFO_INTERVAL = 60;
+const int FPS = 10;
+const int expected_frame_time = int(1000. / FPS) + 50;
 
 static void jpegStream(WiFiClient* client) {
     struct timeval now_tv;
     const uint8_t *exif_buf = NULL;
     size_t exif_len = 0, data_offset;
     
-    Serial.println("Image stream satrt");
+    Serial.println("Image stream start");
     client->println("HTTP/1.1 200 OK");
     client->printf("Content-Type: %s\r\n", _STREAM_CONTENT_TYPE);
     client->println("Content-Disposition: inline; filename=capture.jpg");
@@ -147,6 +149,8 @@ static void jpegStream(WiFiClient* client) {
 
     int interval = INFO_INTERVAL;
     int64_t frame_time_acc = 0;
+    int64_t delay_acc = 0;
+    int delay_cnt = 0;
 
     for (;;) {
         if (0 != gettimeofday(&now_tv, NULL)) {
@@ -177,6 +181,18 @@ static void jpegStream(WiFiClient* client) {
             int64_t frame_time = fr_end - last_frame;
             last_frame         = fr_end;
             frame_time /= 1000;
+
+            /*
+            if (frame_time < expected_frame_time) {
+              int d = int(expected_frame_time - frame_time);
+              if (d > 0) {
+                delay_acc += d;
+                delay_cnt += 1;
+                delay(d);
+              }
+            }
+            */
+            
             frame_time_acc += (long unsigned int)frame_time;
             //Serial.printf(
             //    "MJPG: %luKB %lums (%.1ffps)\r\n",
@@ -185,13 +201,17 @@ static void jpegStream(WiFiClient* client) {
             //);
             if (--interval == 0) {
                 Serial.printf(
-                  "FPS: %.2f, BAT Vol: %dmv, BAT Lvl: %d%%\r\n",
+                  "FPS: %.2f, avg delay (%.2f, %d), BAT Vol: %dmv, BAT Lvl: %d%%\r\n",
                   1000.0 * INFO_INTERVAL / frame_time_acc,
+                  (float)delay_acc / INFO_INTERVAL,
+                  delay_cnt,
                   TimerCAM.Power.getBatteryVoltage(),
                   TimerCAM.Power.getBatteryLevel()
                 );
                 interval = INFO_INTERVAL;
                 frame_time_acc = 0;
+                delay_acc = 0;
+                delay_cnt = 0;
             }
 
             TimerCAM.Camera.free();

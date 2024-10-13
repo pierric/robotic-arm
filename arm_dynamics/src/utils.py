@@ -42,5 +42,5 @@ async def execute(path):
                     await run_gcode(ws, gcode)
 
                 if gr := s.gripper:
-                    await mqtt.publish("/manipulator/command", gr)
-                    await asyncio.sleep(0.5)
+                    gcode = f"SET_SERVO SERVO=gripper angle={gr}"
+                    await run_gcode(ws, gcode)
