@@ -60,7 +60,8 @@ async def execute(path, args, start_record_at=1, position_key="positions", gripp
                     gr = s[position_key][-1]
 
                 if gr:
-                    await mqtt.publish("/manipulator/command", gr)
+                    gcode = f"SET_SERVO SERVO=gripper angle={gr}"
+                    await run_gcode(ws, gcode)
                 return
 
             begin = time.time()
@@ -71,8 +72,10 @@ async def execute(path, args, start_record_at=1, position_key="positions", gripp
             for i, s in enumerate(path):
                 if i == start_record_at:
                     begin = time.time()
-                    await mqtt.publish("/camera/command", "on")
-                    await asyncio.sleep(1)
+                    gcode = f"SET_PIN PIN=camera_en VALUE=1"
+                    await run_gcode(ws, gcode)
+                    await mqtt.publish("/camera/record", "on")
+                    await asyncio.sleep(4)
 
                 print(s)
                 pos = s[position_key]
@@ -87,11 +90,15 @@ async def execute(path, args, start_record_at=1, position_key="positions", gripp
                     gr = s[position_key][-1]
 
                 if gr:
-                    await mqtt.publish("/manipulator/command", gr)
+                    gcode = f"SET_SERVO SERVO=gripper angle={gr}"
+                    await run_gcode(ws, gcode)
                     print(gr)
 
                 await asyncio.sleep(1)
-            await mqtt.publish("/camera/command", "off")
+
+            gcode = f"SET_PIN PIN=camera_en VALUE=0"
+            await run_gcode(ws, gcode)
+            await mqtt.publish("/camera/record", "off")
 
             end = time.time()
             print(f"Time frame: {begin} {end}")

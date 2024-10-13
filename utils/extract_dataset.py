@@ -13,7 +13,7 @@ from numpy import rec
 import shortuuid
 from dotenv import load_dotenv
 
-from common import interpolate, klipper
+from common import interpolate, klipper, last_value
 
 load_dotenv()
 
@@ -23,6 +23,8 @@ RESTHEART_HEADERS = {
     "Authorization": "Basic " + os.environ["RESTHEART_TOKEN"],
 }
 
+FRAMERATE = 20 # M5 Camera, VGA, roughly 20 FPS
+DELAY = 0.6 # num of sec in which images lag behind the actual states
 
 async def dump_images(begin, end, output_file):
     async with aiohttp.ClientSession() as session:
@@ -70,7 +72,7 @@ async def dump_images(begin, end, output_file):
 
             call(
                 (
-                    f"ffmpeg -y -r 10 -i {tmpdir}/%04d.jpg "
+                    f"ffmpeg -y -r {FRAMERATE} -i {tmpdir}/%04d.jpg "
                     f"-movflags +use_metadata_tags "
                     f"-metadata timestamp0={min(timestamps):.3f} {output_file}"
                 ),
@@ -127,21 +129,7 @@ async def get_arm_states(begin, end):
                 "position": rec["position"],
                 "goal": rec["goal"],
                 "velocity": rec["velocity"],
-            }
-        )
-
-    print(f"First state: {records[0]}, last state: {records[-1]}")
-    return records
-
-
-async def get_gripper_states(begin, end):
-    print(f"Getting gripper states between {begin} and {end}")
-    records = []
-    async for rec in iter_collection("gripper", begin, end):
-        records.append(
-            {
-                "timestamp": rec["timestamp"],
-                "state": rec["state"],
+                "gripper": rec["gripper"],
             }
         )
 
@@ -208,7 +196,7 @@ def assign_arm_goals(interpolated, original):
     for i in range(len(original)):
         while j < len_inter and interpolated[j]["timestamp"] < original[i]["timestamp"]:
             interpolated[j]["goal"] = interpolated[j]["position"].copy()
-            j+=1
+            j += 1
 
         if j >= len_inter:
             print("Some original records have to be discarded.")
@@ -218,8 +206,8 @@ def assign_arm_goals(interpolated, original):
 
 
 def assign_goal_from_next(records, *, key):
-    for i in range(len(records)-1):
-        records[i]["goal"] = copy.copy(records[i+1][key])
+    for i in range(len(records) - 1):
+        records[i]["goal"] = copy.copy(records[i + 1][key])
 
     records[-1]["goal"] = copy.copy(records[-1][key])
 
@@ -252,50 +240,52 @@ def main():
 
         # grab a little more data because it is by 0.25s interval
         arm_records = await get_arm_states(args.begin - 0.5, args.end + 1.5)
-        gripper_records = await get_gripper_states(args.begin, args.end + 1)
 
-        final_timestamps = [r["timestamp"] for r in gripper_records]
-        print(f"Saving states between {final_timestamps[0]} and {final_timestamps[-1]}")
-        # images lags behind the actual gripper state
-        delay = 0.4
+        arm_timestamps = [r["timestamp"] for r in arm_records]
+        print(f"Saving states between {arm_timestamps[0]} and {arm_timestamps[-1]}")
         timestamps = await dump_images(
-            final_timestamps[0] + delay, args.end + 1, f"{args.output}/{name}.mp4"
+            arm_timestamps[0] + DELAY, args.end + 1, f"{args.output}/{name}.mp4"
         )
         print(timestamps[:5])
+        timestamps = [t - DELAY for t in timestamps]
 
+        # assert timestamps == final_timestamps
 
-        #assert timestamps == final_timestamps
-
-        rem, arm_positions = interpolate(
-            final_timestamps,
+        rem1, arm_positions = interpolate(
+            timestamps,
             arm_records,
             interpolate_func=klipper,
         )
-        if len(rem) != 0:
-            print(f"some records of arm left over: {rem}")
-
+        rem2, gripper_positions = interpolate(
+            timestamps,
+            arm_records,
+            interpolate_func=partial(last_value, valname="gripper"),
+        )
+        if len(rem1 + rem2) != 0:
+            print(f"some records of arm left over: {rem1} {rem2}")
 
         arm_positions = [
-            {"timestamp": t, "position": p}
-            for t, p in zip(final_timestamps, arm_positions)
+            {"timestamp": t, "position": p} for t, p in zip(timestamps, arm_positions)
         ]
-        #assign_arm_goals(arm_positions, arm_records)
+        gripper_positions = [
+            {"timestamp": t, "state": p} for t, p in zip(timestamps, gripper_positions)
+        ]
         assign_goal_from_next(arm_positions, key="position")
-        assign_goal_from_next(gripper_records, key="state")
+        assign_goal_from_next(gripper_positions, key="state")
 
         assert len(arm_positions) == len(
-            gripper_records
-        ), f"{len(arm_positions)} vs {len(gripper_records)}"
+            gripper_positions
+        ), f"{len(arm_positions)} vs {len(gripper_positions)}"
 
-        #print(arm_positions[:5])
-        #print(gripper_records[:5])
+        # print(arm_positions[:5])
+        # print(gripper_records[:5])
 
         obj = {
             "begin": args.begin,
             "end": args.end,
             "video_time_begin": min(timestamps),
             "video_time_end": max(timestamps),
-            "states": merge(arm_positions, gripper_records),
+            "states": merge(arm_positions, gripper_positions),
         }
 
         if path_file := args.from_path:

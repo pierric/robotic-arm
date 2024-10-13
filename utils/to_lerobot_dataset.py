@@ -37,7 +37,7 @@ FEATURES = Features(
     }
 )
 
-FPS = 10
+FPS = 20 # M5 Camera, VGA, roughly 20 FPS
 
 def load_datadict(ep_idx: int, jsonfile: Path, videofile: Path):
     with open(jsonfile, "r") as fp:
