@@ -1,0 +1,3 @@
+[submodule "camera_m5_idf/lib/esp32-camera"]
+	path = camera_m5_idf/lib/esp32-camera
+	url = https://github.com/espressif/esp32-camera.git
