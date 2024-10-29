@@ -4,3 +4,4 @@ sdkconfig.esp32dev.old
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+dependencies.lock
