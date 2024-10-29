@@ -91,17 +91,17 @@ async def process(session: aiohttp.ClientSession, streaming: aiohttp.ClientRespo
 
 async def stream_receive(session):
     while True:
+        # print(f"streaming {stopFlag} {recordFlag}")
         if stopFlag or not recordFlag:
             await asyncio.sleep(0.5)
             continue
 
-        print("Connecting to camera..")
+        print("Connecting to camera: ", CAM_STREAMING_URL)
 
         try:
             res = await session.get(CAM_STREAMING_URL)
-        except aiohttp.ClientConnectionError:
+        except (aiohttp.ClientConnectionError, asyncio.TimeoutError):
             print("Camera is not online, waiting..")
-            await asyncio.sleep(1)
             continue
 
         print("Connected")
@@ -113,21 +113,29 @@ async def stream_receive(session):
 
 async def check_camera_status(session):
     global stopFlag
+    global recordFlag
     while True:
-        resp = await session.get(
-            MOONRAKER_URL + "/printer/objects/query?output_pin camera_en",
-        )
+        try:
+            resp = await session.get(
+                MOONRAKER_URL + "/printer/objects/query?output_pin camera_en",
+            )
+        except (aiohttp.ClientConnectionError, asyncio.TimeoutError):
+            stopFlag = True
+            recordFlag = False
+            await asyncio.sleep(0.5)
+            continue
+
         if resp.status != 200:
             await asyncio.sleep(0.5)
             continue
 
         status = await resp.json()
         stopFlag = status["result"]["status"]["output_pin camera_en"]["value"] != 1
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(2)
 
 
 async def check_mqtt_command():
-    global recordFlag 
+    global recordFlag
     async with aiomqtt.Client(MQTT_BROKER_URL) as client:
         await client.subscribe("/camera/record")
         print("mqtt subscribed.")
@@ -138,11 +146,17 @@ async def check_mqtt_command():
                 print("Warning: unknown camera command", cmd)
 
             recordFlag = cmd == "on"
+            await asyncio.sleep(0.5)
 
 
 def main():
+    timeout = aiohttp.ClientTimeout(
+        sock_connect=2,
+        sock_read=2,
+    )
+
     async def _ep():
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             await asyncio.gather(
                 check_camera_status(session),
                 check_mqtt_command(),
