@@ -20,7 +20,8 @@ void setup() {
 
     if (!TimerCAM.Camera.begin()) {
         Serial.println("Camera Init Fail");
-        return;
+        delay(500);
+        abort();
     }
 
     TimerCAM.Camera.sensor->set_pixformat(TimerCAM.Camera.sensor, PIXFORMAT_JPEG);
@@ -35,9 +36,15 @@ void setup() {
     Serial.print("Connecting to ");
     Serial.println(WIFI_SSID);
     // Wait for connection
-    while (WiFi.status() != WL_CONNECTED) {
+    int wait_cnt = 0;
+    while (WiFi.status() != WL_CONNECTED && wait_cnt < 5) {
         delay(500);
         Serial.print(".");
+    }
+
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.print("unable to connect to Wifi");
+        abort();
     }
 
     Serial.println("");
