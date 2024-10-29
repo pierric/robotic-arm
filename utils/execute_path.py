@@ -96,8 +96,11 @@ async def execute(path, args, start_record_at=1, position_key="positions", gripp
 
                 await asyncio.sleep(1)
 
-            gcode = f"SET_PIN PIN=camera_en VALUE=0"
-            await run_gcode(ws, gcode)
+            # not really necessary to turn off the camera
+            # likely we will use it soon
+            #
+            #gcode = f"SET_PIN PIN=camera_en VALUE=0"
+            #await run_gcode(ws, gcode)
             await mqtt.publish("/camera/record", "off")
 
             end = time.time()
