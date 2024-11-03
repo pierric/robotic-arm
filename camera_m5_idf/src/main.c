@@ -2,6 +2,8 @@
 #include <esp_log.h>
 #include <esp_sntp.h>
 #include <esp_sleep.h>
+#include <esp_netif.h>
+#include <esp_event.h>
 #include <nvs_flash.h>
 #include <time.h>
 
@@ -15,6 +17,15 @@ const gpio_num_t EXT_WAKEUP_PIN = (gpio_num_t) 13;
 
 extern esp_err_t initWifi(void);
 extern esp_err_t initHttpd();
+
+static bool sntp_sync_status_complete = false;
+
+void sntpNotifCallback(struct timeval *tv)
+{
+    sntp_sync_status_t sntp_sync_status = sntp_get_sync_status();
+    if (sntp_sync_status == SNTP_SYNC_STATUS_COMPLETED)
+        sntp_sync_status_complete = true;
+}
 
 static camera_config_t camera_config = {
     .pin_pwdn = CAM_PIN_PWDN,
@@ -52,56 +63,67 @@ static camera_config_t camera_config = {
 esp_err_t sync_time() {
     extern i2c_dev_t bm8563_dev;
     if (time_synced) {
-        struct tm t_st;
-        bool valid = false;
-        esp_err_t rc = bm8563_get_time(&bm8563_dev, &t_st, &valid);
-        if (rc == ESP_OK && valid) {
-            // mktime(3) uses localtime, force UTC
-            char* oldtz = getenv("TZ");
-            setenv("TZ", "GMT0", 1);
-            tzset();  // Workaround for https://github.com/espressif/esp-idf/issues/11455
-            struct timeval now;
-            now.tv_sec = mktime(&t_st);
-            if (oldtz) {
-                setenv("TZ", oldtz, 1);
-            } else {
-                unsetenv("TZ");
-            }
-            now.tv_usec = 0;
-            settimeofday(&now, NULL);
-            return ESP_OK;
-        }
+        ESP_LOGI(TAG, "... sntp not initialized"); 
+        // struct tm t_st;
+        // bool valid = false;
+        // esp_err_t rc = bm8563_get_time(&bm8563_dev, &t_st, &valid);
+        // if (rc == ESP_OK && valid) {
+        //     // mktime(3) uses localtime, force UTC
+        //     char* oldtz = getenv("TZ");
+        //     setenv("TZ", "GMT0", 1);
+        //     tzset();  // Workaround for https://github.com/espressif/esp-idf/issues/11455
+        //     struct timeval now;
+        //     now.tv_sec = mktime(&t_st);
+        //     if (oldtz) {
+        //         setenv("TZ", oldtz, 1);
+        //     } else {
+        //         unsetenv("TZ");
+        //     }
+        //     now.tv_usec = 0;
+        //     settimeofday(&now, NULL);
+        //     return ESP_OK;
+        // }
     }
 
     ESP_LOGI(TAG, "initializing SNTP.");
-    sntp_set_sync_interval(2 * 3600 * 1000);
     esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
-    esp_sntp_setservername(0, "pool.ntp.org");
+
+    // use the local NTP server if possible.
+    ip_addr_t addr = IPADDR4_INIT_BYTES(192, 168, 178, 92);
+    esp_sntp_setserver(0, &addr);
+    esp_sntp_setservername(1, "0.europe.pool.ntp.org");
+    esp_sntp_setservername(2, "1.europe.pool.ntp.org");
+    esp_sntp_setservername(3, "2.europe.pool.ntp.org");
     sntp_set_sync_mode(SNTP_SYNC_MODE_IMMED);
+    sntp_set_time_sync_notification_cb(sntpNotifCallback);
     esp_sntp_init();
 
     int retry = 0;
-    const int retry_count = 10;
-    while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET && ++retry < retry_count) {
+    const int retry_count = 190;
+    while (!sntp_sync_status_complete && ++retry < retry_count) {
         ESP_LOGI(TAG, "... Waiting for system time to be set... (%d/%d)", retry, retry_count);
-        vTaskDelay(2000 / portTICK_PERIOD_MS);
+        vTaskDelay(200 / portTICK_PERIOD_MS);
     }
-    if (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED) {
-        ESP_LOGI(TAG, "... done");
-    }
-    else {
+    if (!sntp_sync_status_complete) {
         ESP_LOGI(TAG, "... still not ready");
         return ESP_FAIL;
     }
 
+    ESP_LOGI(TAG, "... sntp done");
     time_t now;
     time(&now);
     bm8563_set_time(&bm8563_dev, localtime(&now));
-    time_synced = true;
+    //sync on every boot because bm8563 has only second resolution.
+    //sync up with the local ntp server should be quick enough.
+    //time_synced = true;
     return ESP_OK;
 }
 
 void app_main() {
+    ESP_ERROR_CHECK(nvs_flash_init());
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
     vTaskDelay(200 / portTICK_PERIOD_MS);
     ESP_ERROR_CHECK(m5_camera_init());
     ESP_ERROR_CHECK(m5_camera_battery_hold_power());
@@ -120,16 +142,15 @@ void app_main() {
         m5_camera_clear_rtc_timer_flag();
     }    
 
-    ESP_ERROR_CHECK(nvs_flash_init());
-    ESP_ERROR_CHECK(esp_camera_init(&camera_config));
+    ESP_ERROR_CHECK(initWifi());
 
+    ESP_ERROR_CHECK(esp_camera_init(&camera_config));
     sensor_t *sensor = esp_camera_sensor_get();
     sensor->set_pixformat(sensor, PIXFORMAT_JPEG);
     sensor->set_framesize(sensor, FRAMESIZE_VGA);
     sensor->set_vflip(sensor, 1);
     sensor->set_hmirror(sensor, 0);
 
-    ESP_ERROR_CHECK(initWifi());
     setenv("TZ", "UTC", 1);
     tzset();
     ESP_ERROR_CHECK(sync_time());
